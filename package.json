@@ -1,0 +1,42 @@
+{
+  "name": "better-all",
+  "version": "0.0.1",
+  "description": "Better Promise.all with automatic dependency optimization",
+  "type": "module",
+  "main": "./dist/es/index.js",
+  "module": "./dist/es/index.js",
+  "types": "./dist/es/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/es/index.d.ts",
+      "import": "./dist/es/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bunchee",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "promise",
+    "async",
+    "parallel",
+    "dependency",
+    "optimization"
+  ],
+  "author": "Shu Ding <g@shud.in>",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@vitest/coverage-v8": "^3.0.5",
+    "bunchee": "^6.3.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.5"
+  }
+}
