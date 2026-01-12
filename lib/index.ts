@@ -45,7 +45,9 @@ export function all<T extends Record<string, any>>(
           ? Promise<R>
           : Promise<ReturnType<T[K]>>
       }
-    }>
+    }> & {
+      [P in keyof T]: T[P] extends (...args: any[]) => any ? T[P] : never
+    }
 ): Promise<AllResult<T>> {
   const taskNames = Object.keys(tasks) as (keyof T)[]
   const results = new Map<keyof T, any>()

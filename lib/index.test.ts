@@ -522,6 +522,20 @@ describe('all', () => {
 
       expect(result.profile).toEqual({ userId: 1, displayName: 'ALICE' })
     })
+
+    it('should error on non-function task definitions', async () => {
+      await all({
+        // @ts-expect-error
+        invalidTask: 1,
+      })
+
+      await all({
+        // @ts-expect-error
+        invalidTask: {
+          a: 1,
+        },
+      })
+    })
   })
 
   describe('Real-world scenarios', () => {
