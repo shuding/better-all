@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, expectTypeOf } from 'vitest'
-import { all } from './index'
+import { all, promiseAllWithSettle } from './index'
 
 describe('all', () => {
   describe('Basic parallel execution', () => {
@@ -683,5 +683,92 @@ describe('all', () => {
 
       expect(result).toEqual({ a: 1, b: 11 })
     })
+  })
+})
+
+
+//tests for promiseAllWithSettle
+
+describe('promiseAllWithSettle', () => {
+  it('should return all values when all promises fulfill', async () => {
+    const result = await promiseAllWithSettle([
+      Promise.resolve(1),
+      Promise.resolve('a'),
+      Promise.resolve(true),
+    ])
+    expect(result).toEqual([1, 'a', true])
+  })
+
+  it('should throw AggregateError with all rejection reasons if any promise rejects', async () => {
+    const error = new Error('boom')
+    try {
+      await promiseAllWithSettle([
+        Promise.resolve(1),
+        Promise.reject(error),
+        Promise.resolve(2),
+      ])
+    } catch (e: any) {
+      expect(e).toBeInstanceOf(AggregateError)
+      expect(e.errors).toHaveLength(1)
+      expect(e.errors[0]).toBe(error)
+      expect(e.message).toBe('Promise rejection')
+    }
+  })
+
+  it('should wait for all promises to settle before throwing', async () => {
+    const slowPromise = new Promise((resolve) =>
+      setTimeout(() => resolve('slow'), 50)
+    )
+    const fastReject = Promise.reject(new Error('fast'))
+
+    const start = Date.now()
+    await expect(
+      promiseAllWithSettle([slowPromise, fastReject])
+    ).rejects.toThrow()
+    const end = Date.now()
+    expect(end - start).toBeGreaterThanOrEqual(40) // slightly less than 50 due to timing
+  })
+
+  it('should call onRejected callback for rejected promises', async () => {
+    const onRejected = vi.fn()
+    const error1 = new Error('error1')
+    const error2 = new Error('error2')
+
+    await expect(
+      promiseAllWithSettle(
+        [
+          Promise.reject(error1),
+          Promise.resolve(1),
+          Promise.reject(error2),
+        ],
+        onRejected
+      )
+    ).rejects.toThrow()
+
+    expect(onRejected).toHaveBeenCalledTimes(2)
+    expect(onRejected).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'rejected', reason: error1 })
+    )
+    expect(onRejected).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'rejected', reason: error2 })
+    )
+  })
+
+  it('should throw AggregateError with all rejections', async () => {
+    // Note: Promise.allSettled preserves order
+    const error1 = new Error('first')
+    const error2 = new Error('second')
+
+    try {
+      await promiseAllWithSettle([
+        Promise.reject(error1),
+        Promise.reject(error2),
+      ])
+    } catch (e: any) {
+      expect(e).toBeInstanceOf(AggregateError)
+      expect(e.errors).toHaveLength(2)
+      expect(e.errors[0]).toBe(error1)
+      expect(e.errors[1]).toBe(error2)
+    }
   })
 })

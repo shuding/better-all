@@ -118,3 +118,53 @@ export function all<T extends Record<string, any>>(
 
   return Promise.all(promises).then(() => returnValue as AllResult<T>)
 }
+
+/**
+ * Promise.allSettled
+ *
+ * Usage:
+ * const { a, b, c } = await promiseAllWithSettle([
+ *   Promise.resolve(1),
+ *   Promise.resolve('hello'),
+ *   Promise.resolve(true),
+ * ])
+ */
+
+const defaultOnRejected = (_: PromiseRejectedResult) => {}
+
+function isRejected(
+  input: PromiseSettledResult<unknown>
+): input is PromiseRejectedResult {
+  return input.status === 'rejected'
+}
+
+
+
+export async function promiseAllWithSettle<T extends readonly unknown[] | []>(
+  promises: T,
+  onRejected: (result: PromiseRejectedResult) => void = defaultOnRejected
+): Promise<{ -readonly [P in keyof T]: Awaited<T[P]> }> {
+  const settledPromises = await Promise.allSettled(promises)
+
+  const rejectedPromises: PromiseRejectedResult[] = []
+  const fulfilledPromises: any[] = []
+
+  for (const promiseResult of settledPromises) {
+    if (isRejected(promiseResult)) {
+      onRejected(promiseResult)
+      rejectedPromises.push(promiseResult)
+    } else {
+      fulfilledPromises.push(promiseResult.value)
+    }
+  }
+
+  if (rejectedPromises.length > 0) {
+    throw new AggregateError(
+      rejectedPromises.map((p) => p.reason),
+      'Promise rejection'
+    )
+  }
+
+  return fulfilledPromises as { -readonly [P in keyof T]: Awaited<T[P]> }
+}
+

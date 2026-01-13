@@ -1,1 +1,1 @@
-export { all } from '../lib/index'
+export * from '../lib/index'
