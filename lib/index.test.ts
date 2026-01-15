@@ -688,6 +688,110 @@ describe('all', () => {
       expect(result).toEqual({ a: 1, b: 11 })
     })
   })
+
+  describe('Circular dependency detection', () => {
+    it('should detect simple circular dependency (a -> b -> a)', async () => {
+      await expect(
+        all({
+          async a() {
+            return await this.$.b
+          },
+          async b() {
+            return await this.$.a
+          },
+        })
+      ).rejects.toThrow(/[Cc]ircular dependency/)
+    })
+
+    it('should include cycle path in error message', async () => {
+      await expect(
+        all({
+          async a() {
+            return await this.$.b
+          },
+          async b() {
+            return await this.$.a
+          },
+        })
+      ).rejects.toThrow(/a.*b.*a|b.*a.*b/)
+    })
+
+    it('should detect three-task circular dependency (a -> b -> c -> a)', async () => {
+      await expect(
+        all({
+          async a() {
+            return await this.$.c
+          },
+          async b() {
+            return await this.$.a
+          },
+          async c() {
+            return await this.$.b
+          },
+        })
+      ).rejects.toThrow(/[Cc]ircular dependency/)
+    })
+
+    it('should detect self-dependency', async () => {
+      await expect(
+        all({
+          async a() {
+            return await this.$.a
+          },
+        })
+      ).rejects.toThrow(/[Cc]ircular dependency/)
+    })
+
+    it('should not falsely detect cycle when no cycle exists', async () => {
+      const result = await all({
+        async a() {
+          return 1
+        },
+        async b() {
+          return (await this.$.a) + 10
+        },
+        async c() {
+          return (await this.$.a) + (await this.$.b)
+        },
+      })
+
+      expect(result).toEqual({ a: 1, b: 11, c: 12 })
+    })
+
+    it('should handle Promise.all with multiple dependencies without false cycle', async () => {
+      const result = await all({
+        async a() {
+          return 1
+        },
+        async b() {
+          return 2
+        },
+        async c() {
+          const [a, b] = await Promise.all([this.$.a, this.$.b])
+          return a + b
+        },
+      })
+
+      expect(result).toEqual({ a: 1, b: 2, c: 3 })
+    })
+
+    it('should detect cycle even with parallel dependencies', async () => {
+      await expect(
+        all({
+          async a() {
+            const [b, c] = await Promise.all([this.$.b, this.$.c])
+            return b + c
+          },
+          async b() {
+            return await this.$.a
+          },
+          async c() {
+            return 1
+          },
+        })
+      ).rejects.toThrow(/[Cc]ircular dependency/)
+    })
+  })
 })
 
 describe('allSettled', () => {
@@ -1054,6 +1158,43 @@ describe('allSettled', () => {
         nil: { status: 'fulfilled', value: null },
         undef: { status: 'fulfilled', value: undefined },
       })
+    })
+  })
+
+  describe('Circular dependency detection', () => {
+    it('should detect circular dependency and return rejected result', async () => {
+      const result = await allSettled({
+        async a() {
+          return await this.$.b
+        },
+        async b() {
+          return await this.$.a
+        },
+      })
+
+      expect(result.a.status).toBe('rejected')
+      expect(result.b.status).toBe('rejected')
+      if (result.a.status === 'rejected') {
+        expect(result.a.reason.message).toMatch(/[Cc]ircular dependency/)
+      }
+    })
+
+    it('should not affect independent tasks when cycle is detected', async () => {
+      const result = await allSettled({
+        async a() {
+          return await this.$.b
+        },
+        async b() {
+          return await this.$.a
+        },
+        async c() {
+          return 'independent'
+        },
+      })
+
+      expect(result.a.status).toBe('rejected')
+      expect(result.b.status).toBe('rejected')
+      expect(result.c).toEqual({ status: 'fulfilled', value: 'independent' })
     })
   })
 })

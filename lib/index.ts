@@ -62,6 +62,68 @@ function executeTasksInternal<T extends Record<string, any>>(
   >()
   const returnValue: Record<string, any> = {}
 
+  // Track which tasks are waiting for which dependencies (for cycle detection)
+  const waiting_for = new Map<string, Set<string>>()
+
+  // Find cycle path using DFS, returns path if cycle found, null otherwise
+  const findCyclePath = (from: string, to: string): string[] | null => {
+    const visited = new Set<string>()
+    const path: string[] = [to]
+
+    const dfs = (current: string): boolean => {
+      if (current === from) return true
+      if (visited.has(current)) return false
+      visited.add(current)
+
+      const deps = waiting_for.get(current)
+      if (deps) {
+        for (const dep of deps) {
+          path.push(dep)
+          if (dfs(dep)) return true
+          path.pop()
+        }
+      }
+      return false
+    }
+
+    return dfs(to) ? path : null
+  }
+
+  // Create a dependency proxy for a specific task (knows caller identity)
+  const createDepProxyFor = (task_name: string) => {
+    return new Proxy({} as DepProxy<T>, {
+      get(_, dep_name) {
+        // Filter non-string and non-existent tasks
+        if (typeof dep_name !== 'string' || !(dep_name in tasks)) {
+          if (typeof dep_name === 'string') {
+            return Promise.reject(new Error(`Unknown task "${dep_name}"`))
+          }
+          return undefined
+        }
+
+        // Check for circular dependency before waiting
+        const cycle_path = findCyclePath(task_name, dep_name)
+        if (cycle_path) {
+          const cycle_str = [task_name, ...cycle_path].join(' -> ')
+          return Promise.reject(
+            new Error(`Circular dependency detected: ${cycle_str}`)
+          )
+        }
+
+        // Record this dependency
+        if (!waiting_for.has(task_name)) {
+          waiting_for.set(task_name, new Set())
+        }
+        waiting_for.get(task_name)!.add(dep_name)
+
+        // Wait for dependency and clean up when done
+        return waitForDep(dep_name as keyof T).finally(() => {
+          waiting_for.get(task_name)?.delete(dep_name)
+        })
+      },
+    })
+  }
+
   const waitForDep = (depName: keyof T): Promise<any> => {
     if (!(depName in tasks)) {
       return Promise.reject(new Error(`Unknown task "${String(depName)}"`))
@@ -106,17 +168,7 @@ function executeTasksInternal<T extends Record<string, any>>(
     }
   }
 
-  // Create dep proxy
-  const depProxy = new Proxy({} as DepProxy<T>, {
-    get(_, depName: string) {
-      return waitForDep(depName as keyof T)
-    },
-  })
-
-  // Create context with $ proxy
-  const context: TaskContext<T> = { $: depProxy }
-
-  // Run all tasks in parallel
+  // Run all tasks in parallel, each with its own dependency proxy
   const promises = taskNames.map(async (name) => {
     try {
       const taskFn = tasks[name]
@@ -124,6 +176,8 @@ function executeTasksInternal<T extends Record<string, any>>(
         throw new Error(`Task "${String(name)}" is not a function`)
       }
 
+      // Create per-task context with proxy that knows caller identity
+      const context: TaskContext<T> = { $: createDepProxyFor(String(name)) }
       const result = await taskFn.call(context)
       handleResult(name, result)
     } catch (err) {
