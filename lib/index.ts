@@ -62,10 +62,77 @@ function executeTasksInternal<T extends Record<string, any>>(
   >()
   const returnValue: Record<string, any> = {}
 
-  const waitForDep = (depName: keyof T): Promise<any> => {
+  // Track which task is waiting for which (for cycle detection)
+  const waitingFor = new Map<keyof T, Set<keyof T>>()
+
+  // Check if there's a path from 'from' to 'to' in the waiting graph
+  const hasCyclePath = (from: keyof T, to: keyof T): boolean => {
+    const visited = new Set<keyof T>()
+    const stack: (keyof T)[] = [from]
+    while (stack.length > 0) {
+      const current = stack.pop()!
+      if (current === to) return true
+      if (visited.has(current)) continue
+      visited.add(current)
+      const deps = waitingFor.get(current)
+      if (deps) {
+        for (const dep of deps) {
+          stack.push(dep)
+        }
+      }
+    }
+    return false
+  }
+
+  // Build cycle path for error message
+  const buildCyclePath = (from: keyof T, to: keyof T): string => {
+    const path: (keyof T)[] = [from]
+    const visited = new Set<keyof T>()
+    const findPath = (current: keyof T): boolean => {
+      if (current === to) return true
+      if (visited.has(current)) return false
+      visited.add(current)
+      const deps = waitingFor.get(current)
+      if (deps) {
+        for (const dep of deps) {
+          path.push(dep)
+          if (findPath(dep)) return true
+          path.pop()
+        }
+      }
+      return false
+    }
+    findPath(from)
+    return path.map(String).join(' → ')
+  }
+
+  const waitForDep = (callerTask: keyof T, depName: keyof T): Promise<any> => {
     if (!(depName in tasks)) {
       return Promise.reject(new Error(`Unknown task "${String(depName)}"`))
     }
+
+    // Self-reference check
+    if (callerTask === depName) {
+      return Promise.reject(
+        new Error(`Circular dependency detected: ${String(callerTask)} → ${String(depName)}`)
+      )
+    }
+
+    // Check if adding this dependency would create a cycle
+    // (i.e., if depName is already waiting for callerTask, directly or indirectly)
+    if (hasCyclePath(depName, callerTask)) {
+      const cyclePath = buildCyclePath(depName, callerTask)
+      return Promise.reject(
+        new Error(`Circular dependency detected: ${String(callerTask)} → ${cyclePath} → ${String(callerTask)}`)
+      )
+    }
+
+    // Record that callerTask is waiting for depName
+    if (!waitingFor.has(callerTask)) {
+      waitingFor.set(callerTask, new Set())
+    }
+    waitingFor.get(callerTask)!.add(depName)
+
     if (results.has(depName)) {
       return Promise.resolve(results.get(depName))
     }
@@ -106,16 +173,6 @@ function executeTasksInternal<T extends Record<string, any>>(
     }
   }
 
-  // Create dep proxy
-  const depProxy = new Proxy({} as DepProxy<T>, {
-    get(_, depName: string) {
-      return waitForDep(depName as keyof T)
-    },
-  })
-
-  // Create context with $ proxy
-  const context: TaskContext<T> = { $: depProxy }
-
   // Run all tasks in parallel
   const promises = taskNames.map(async (name) => {
     try {
@@ -124,7 +181,15 @@ function executeTasksInternal<T extends Record<string, any>>(
         throw new Error(`Task "${String(name)}" is not a function`)
       }
 
-      const result = await taskFn.call(context)
+      // Create task-specific proxy that knows which task is calling
+      const taskDepProxy = new Proxy({} as DepProxy<T>, {
+        get(_, depName: string) {
+          return waitForDep(name, depName as keyof T)
+        },
+      })
+      const taskContext: TaskContext<T> = { $: taskDepProxy }
+
+      const result = await taskFn.call(taskContext)
       handleResult(name, result)
     } catch (err) {
       handleError(name, err)
