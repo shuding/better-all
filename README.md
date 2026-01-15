@@ -90,24 +90,29 @@ yarn add better-all
 - **Automatic maximal parallelization**: Independent tasks run in parallel
 - **Object-based API**: Minimal cognitive load, easy to read
 - **No hanging promises**: Avoids the uncaught dangling promises problem often seen in manual optimization
+- **Debug mode with waterfall visualization**: See exactly how tasks execute with ASCII waterfall charts
 - **Lightweight**: Minimal dependencies and small bundle size
 
 ## API
 
-### `all(tasks)`
+### `all(tasks, options?)`
 
 Execute tasks with automatic dependency resolution.
 
 - `tasks`: Object of async task functions
+- `options`: Optional configuration object
+  - `debug`: Set to `true` to output a waterfall chart showing task execution timeline
 - Each task function receives `this.$` - an object with promises for all task results
 - Returns a promise that resolves to an object with all task results
 - Rejects if any task fails (like `Promise.all`)
 
-### `allSettled(tasks)`
+### `allSettled(tasks, options?)`
 
 Execute tasks with automatic dependency resolution, returning settled results for all tasks.
 
 - `tasks`: Object of async task functions
+- `options`: Optional configuration object
+  - `debug`: Set to `true` to output a waterfall chart showing task execution timeline
 - Each task function receives `this.$` - an object with promises for all task results
 - Returns a promise that resolves to an object with all task results as `{ status: 'fulfilled', value }` or `{ status: 'rejected', reason }`
 - Never rejects - failed tasks are included in the result (like `Promise.allSettled`)
@@ -201,6 +206,78 @@ const result = await all({
 ```
 
 This still gives optimal parallelization.
+
+## Debug Mode
+
+Enable debug mode to visualize task execution with a waterfall chart:
+
+```typescript
+const result = await all({
+  async config() {
+    await sleep(50)
+    return { apiUrl: 'https://api.example.com' }
+  },
+  async user() {
+    await sleep(120)
+    return { id: 1, name: 'Alice' }
+  },
+  async posts() {
+    const user = await this.$.user
+    await sleep(200)
+    return fetchPosts(user.id)
+  },
+  async profile() {
+    const user = await this.$.user
+    const config = await this.$.config
+    await sleep(80)
+    return fetchProfile(user.id, config.apiUrl)
+  },
+  async analytics() {
+    const posts = await this.$.posts
+    const profile = await this.$.profile
+    await sleep(40)
+    return computeAnalytics(posts, profile)
+  }
+}, { debug: true })
+```
+
+This outputs an ASCII waterfall chart showing:
+- Task execution timeline
+- Task duration in milliseconds
+- Dependencies for each task
+- Visual representation of parallel vs sequential execution
+
+Example output:
+
+```
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                           Task Execution Waterfall                             ║
+╠════════════════════════════════════════════════════════════════════════════════╣
+║ Total Duration: 364.54ms                                                       ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+Task      │ Deps           │ Duration │ Timeline
+──────────┼────────────────┼──────────┼─────────────────────────────────────────────────────────────
+config    │ -              │   51.4ms │ ████████                                                    
+user      │ -              │  121.4ms │ ████████████████████                                        
+posts     │ user           │  322.6ms │ ░░░░░░░░░░░░░░░░░░░░██████████████████████████████████████  
+profile   │ user, config   │  202.9ms │ ░░░░░░░░░░░░░░░░░░░░███████████████████                     
+analytics │ posts, profile │  364.4ms │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░███████
+
+Legend: █ = active (fulfilled), ▓ = active (rejected), ░ = waiting on dependency
+```
+
+The enhanced waterfall visualization shows:
+- **█** (solid bars) = Active execution time when the task is running its code
+- **░** (light shade) = Waiting time when the task is blocked on a dependency
+- **▓** (dashed bars) = Active execution for tasks that failed
+
+This makes it easy to:
+- Distinguish between active execution vs waiting on dependencies
+- Identify which tasks are running in parallel
+- See exactly how long each task actively executes vs waits
+- Understand the dependency chain and blocking relationships
+- Spot opportunities for optimization (e.g., tasks with long wait times)
 
 ## Error Handling
 

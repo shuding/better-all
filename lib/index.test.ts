@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, expectTypeOf } from 'vitest'
 import { all, allSettled } from './index'
 
+/**
+ * Utility function to sleep for a specified number of milliseconds
+ */
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
 describe('all', () => {
   describe('Basic parallel execution', () => {
     it('should execute independent tasks in parallel', async () => {
@@ -9,19 +14,19 @@ describe('all', () => {
       const result = await all({
         async a() {
           executionOrder.push('a-start')
-          await new Promise((resolve) => setTimeout(resolve, 20))
+          await sleep(20)
           executionOrder.push('a-end')
           return 1
         },
         async b() {
           executionOrder.push('b-start')
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          await sleep(10)
           executionOrder.push('b-end')
           return 2
         },
         async c() {
           executionOrder.push('c-start')
-          await new Promise((resolve) => setTimeout(resolve, 5))
+          await sleep(5)
           executionOrder.push('c-end')
           return 3
         },
@@ -60,7 +65,7 @@ describe('all', () => {
           return 1
         },
         async b() {
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          await sleep(10)
           return 2
         },
         c() {
@@ -95,11 +100,11 @@ describe('all', () => {
     it('should handle multiple dependencies', async () => {
       const result = await all({
         async a() {
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          await sleep(10)
           return 1
         },
         async b() {
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          await sleep(10)
           return 2
         },
         async c() {
@@ -142,7 +147,7 @@ describe('all', () => {
       const result = await all({
         async a() {
           executionOrder.push('a')
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          await sleep(10)
           return 1
         },
         async b() {
@@ -167,7 +172,7 @@ describe('all', () => {
       const result = await all({
         async a() {
           callCounts.a++
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          await sleep(10)
           return 1
         },
         async b() {
@@ -262,7 +267,7 @@ describe('all', () => {
       await expect(
         all({
           async a() {
-            await new Promise((resolve) => setTimeout(resolve, 10))
+            await sleep(10)
             throw new Error('Task a failed')
           },
           async b() {
@@ -415,15 +420,15 @@ describe('all', () => {
 
       await all({
         async a() {
-          await new Promise((resolve) => setTimeout(resolve, 50))
+          await sleep(50)
           return 1
         },
         async b() {
-          await new Promise((resolve) => setTimeout(resolve, 50))
+          await sleep(50)
           return 2
         },
         async c() {
-          await new Promise((resolve) => setTimeout(resolve, 50))
+          await sleep(50)
           return 3
         },
       })
@@ -438,12 +443,12 @@ describe('all', () => {
 
       await all({
         async a() {
-          await new Promise((resolve) => setTimeout(resolve, 30))
+          await sleep(30)
           executionOrder.push('a')
           return 1
         },
         async b() {
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          await sleep(10)
           executionOrder.push('b')
           return 2
         },
@@ -574,11 +579,11 @@ describe('all', () => {
     it('should handle mixed parallel and dependent operations', async () => {
       const result = await all({
         async config() {
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          await sleep(10)
           return { apiUrl: 'https://api.example.com' }
         },
         async staticData() {
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          await sleep(10)
           return { locale: 'en' }
         },
         async userData() {
@@ -675,12 +680,12 @@ describe('all', () => {
     it('should handle async operations in dependent tasks', async () => {
       const result = await all({
         async a() {
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          await sleep(10)
           return 1
         },
         async b() {
           const aValue = await this.$.a
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          await sleep(10)
           return aValue + 10
         },
       })
@@ -846,17 +851,17 @@ describe('allSettled', () => {
 
       const result = await allSettled({
         async a() {
-          await new Promise((resolve) => setTimeout(resolve, 10))
+          await sleep(10)
           executionOrder.push('a')
           throw new Error('a failed')
         },
         async b() {
-          await new Promise((resolve) => setTimeout(resolve, 5))
+          await sleep(5)
           executionOrder.push('b')
           return 2
         },
         async c() {
-          await new Promise((resolve) => setTimeout(resolve, 15))
+          await sleep(15)
           executionOrder.push('c')
           return 3
         },
@@ -1054,6 +1059,519 @@ describe('allSettled', () => {
         nil: { status: 'fulfilled', value: null },
         undef: { status: 'fulfilled', value: undefined },
       })
+    })
+  })
+})
+
+describe('Debug mode', () => {
+  describe('all() with debug', () => {
+    it('should output waterfall chart with debug: true', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      const result = await all(
+        {
+          async a() {
+            await sleep(50)
+            return 1
+          },
+          async b() {
+            await sleep(30)
+            return 2
+          },
+          async c() {
+            const aValue = await this.$.a
+            await sleep(20)
+            return aValue + 10
+          },
+        },
+        { debug: true }
+      )
+
+      expect(result).toEqual({ a: 1, b: 2, c: 11 })
+      expect(consoleSpy).toHaveBeenCalledTimes(1)
+
+      const output = consoleSpy.mock.calls[0][0]
+      expect(output).toContain('Task Execution Waterfall')
+      expect(output).toContain('Total Duration')
+      expect(output).toContain('Timeline')
+      expect(output).toContain('a')
+      expect(output).toContain('b')
+      expect(output).toContain('c')
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should show multiple dependencies in deps column', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      await all(
+        {
+          async a() {
+            return 1
+          },
+          async b() {
+            return 2
+          },
+          async c() {
+            const aValue = await this.$.a
+            const bValue = await this.$.b
+            return aValue + bValue
+          },
+        },
+        { debug: true }
+      )
+
+      const output = consoleSpy.mock.calls[0][0]
+      const lines = output.split('\n')
+      const cLine = lines.find((line: string) => line.trim().startsWith('c'))
+
+      expect(cLine).toBeDefined()
+      // Should list both dependencies (order may vary)
+      expect(cLine).toMatch(/a.*b|b.*a/)
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should show complex dependency graph with wait-active-wait pattern', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      await allSettled(
+        {
+          async fastTask() {
+            await sleep(20)
+          },
+          async slowTask() {
+            await sleep(100)
+          },
+          async multiWaitTask() {
+            await this.$.fastTask
+            await sleep(30)
+            await this.$.slowTask
+            await sleep(10)
+          },
+          async waitForMultiWaitTask() {
+            await this.$.multiWaitTask
+            await sleep(10)
+          },
+          async errorAfterFastTask() {
+            await this.$.fastTask
+            await sleep(15)
+            throw new Error()
+          },
+        },
+        { debug: true }
+      )
+
+      const output = consoleSpy.mock.calls[0][0]
+      consoleSpy.mockRestore()
+
+      console.log(output)
+
+      // multiWaitTask should show: ░(wait for fast) █(30ms active) ░(wait for slow) █(10ms active)
+      const lines = output.split('\n')
+      const multiWaitLine = lines.find((line: string) =>
+        line.includes('multiWaitTask')
+      )
+      expect(multiWaitLine).toBeDefined()
+
+      // Should contain both waiting (░) and active (█) characters
+      expect(multiWaitLine).toContain('░')
+      expect(multiWaitLine).toContain('█')
+    })
+
+    it('should show dependencies in waterfall chart', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      await all(
+        {
+          async a() {
+            return 1
+          },
+          async b() {
+            return 2
+          },
+          async c() {
+            const aValue = await this.$.a
+            const bValue = await this.$.b
+            return aValue + bValue
+          },
+        },
+        { debug: true }
+      )
+
+      const output = consoleSpy.mock.calls[0][0]
+      // Check that task c shows dependencies on a and b
+      expect(output).toContain('a')
+      expect(output).toContain('b')
+      expect(output).toContain('c')
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should work with no dependencies', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      const result = await all(
+        {
+          async a() {
+            return 1
+          },
+          async b() {
+            return 2
+          },
+        },
+        { debug: true }
+      )
+
+      expect(result).toEqual({ a: 1, b: 2 })
+      expect(consoleSpy).toHaveBeenCalledTimes(1)
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should still output waterfall on error', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      await expect(
+        all(
+          {
+            async a() {
+              throw new Error('a failed')
+            },
+            async b() {
+              return 2
+            },
+          },
+          { debug: true }
+        )
+      ).rejects.toThrow('a failed')
+
+      expect(consoleSpy).toHaveBeenCalledTimes(1)
+      const output = consoleSpy.mock.calls[0][0]
+      expect(output).toContain('Task Execution Waterfall')
+
+      consoleSpy.mockRestore()
+    })
+  })
+
+  describe('allSettled() with debug', () => {
+    it('should output waterfall chart with debug: true', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      const result = await allSettled(
+        {
+          async a() {
+            return 1
+          },
+          async b() {
+            throw new Error('b failed')
+          },
+          async c() {
+            return 3
+          },
+        },
+        { debug: true }
+      )
+
+      expect(result.a).toEqual({ status: 'fulfilled', value: 1 })
+      expect(result.b.status).toBe('rejected')
+      expect(result.c).toEqual({ status: 'fulfilled', value: 3 })
+
+      expect(consoleSpy).toHaveBeenCalledTimes(1)
+      const output = consoleSpy.mock.calls[0][0]
+      expect(output).toContain('Task Execution Waterfall')
+      expect(output).toContain('Legend')
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should show rejected tasks with different visual (▓)', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      await allSettled(
+        {
+          async failed() {
+            await sleep(30)
+            throw new Error('failed')
+          },
+          async success() {
+            await sleep(30)
+            return 'ok'
+          },
+        },
+        { debug: true }
+      )
+
+      const output = consoleSpy.mock.calls[0][0]
+      const lines = output.split('\n')
+      const failedLine = lines.find((line: string) => line.includes('failed'))
+      const successLine = lines.find((line: string) => line.includes('success'))
+
+      // Failed task should show ▓ (rejected bars)
+      expect(failedLine).toContain('▓')
+      // Success task should show █ (fulfilled bars)
+      expect(successLine).toContain('█')
+
+      // Legend should explain both
+      expect(output).toContain('active (rejected)')
+      expect(output).toContain('▓')
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should show tasks that depend on failed tasks as waiting', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      await allSettled(
+        {
+          async a() {
+            await sleep(50)
+            throw new Error('a failed')
+          },
+          async b() {
+            const aValue = await this.$.a
+            await sleep(20)
+            return aValue + 10
+          },
+        },
+        { debug: true }
+      )
+
+      const output = consoleSpy.mock.calls[0][0]
+      const lines = output.split('\n')
+      const bLine = lines.find((line: string) => line.trim().startsWith('b'))
+
+      // Task b should show waiting (░) for dependency a
+      // When a fails, b fails immediately at the await point
+      // So it shows waiting time only (no active execution time)
+      expect(bLine).toContain('░') // Waiting for a
+
+      consoleSpy.mockRestore()
+    })
+  })
+
+  describe('Edge cases', () => {
+    it('should handle empty object with debug (inline snapshot)', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      const result = await all({}, { debug: true })
+      expect(result).toEqual({})
+
+      // Should still output chart (even if empty)
+      expect(consoleSpy).toHaveBeenCalledTimes(1)
+      const output = consoleSpy.mock.calls[0][0]
+
+      expect(output).toMatchInlineSnapshot(`""`)
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should work without debug option (backwards compatibility)', async () => {
+      const consoleSpy = vi.spyOn(console, 'log')
+
+      const result = await all({
+        async a() {
+          return 1
+        },
+      })
+
+      expect(result).toEqual({ a: 1 })
+      // Should not output anything without debug flag
+      expect(consoleSpy).not.toHaveBeenCalled()
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should handle single task with debug', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      await all(
+        {
+          async onlyTask() {
+            await sleep(25)
+            return 'done'
+          },
+        },
+        { debug: true }
+      )
+
+      const output = consoleSpy.mock.calls[0][0]
+      const lines = output.split('\n')
+      const taskLine = lines.find((line: string) => line.includes('onlyTask'))
+
+      expect(taskLine).toBeDefined()
+      expect(taskLine).toContain('│ -') // No dependencies
+      expect(taskLine).toContain('█') // Active bar
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should handle task names with special characters', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      await all(
+        {
+          async 'task-1'() {
+            return 1
+          },
+          async task_2() {
+            return 2
+          },
+          async task$3() {
+            return 3
+          },
+        },
+        { debug: true }
+      )
+
+      const output = consoleSpy.mock.calls[0][0]
+
+      // All task names should appear in output
+      expect(output).toContain('task-1')
+      expect(output).toContain('task_2')
+      expect(output).toContain('task$3')
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should handle long dependency chains in output', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      await all(
+        {
+          async a() {
+            return 1
+          },
+          async b() {
+            return await this.$.a
+          },
+          async c() {
+            return await this.$.b
+          },
+          async d() {
+            return await this.$.c
+          },
+        },
+        { debug: true }
+      )
+
+      const output = consoleSpy.mock.calls[0][0]
+      const lines = output.split('\n')
+
+      // Each task should show its dependency
+      const bLine = lines.find((line: string) => line.trim().startsWith('b'))
+      const cLine = lines.find((line: string) => line.trim().startsWith('c'))
+      const dLine = lines.find((line: string) => line.trim().startsWith('d'))
+
+      expect(bLine).toContain('a')
+      expect(cLine).toContain('b')
+      expect(dLine).toContain('c')
+
+      // Later tasks should show more waiting (░)
+      const dTimelineMatch = dLine?.match(/Timeline[^│]*│\s*(.+)$/)
+      if (dTimelineMatch) {
+        const dTimeline = dTimelineMatch[1]
+        expect(dTimeline).toContain('░')
+      }
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should properly format table alignment', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      await all(
+        {
+          async shortName() {
+            return 1
+          },
+          async veryLongTaskNameHere() {
+            return 2
+          },
+        },
+        { debug: true }
+      )
+
+      const output = consoleSpy.mock.calls[0][0]
+      const lines = output.split('\n')
+
+      // Find header separator line
+      const separatorLine = lines.find((line: string) => line.includes('─┼─'))
+      expect(separatorLine).toBeDefined()
+
+      // All task lines should have the same number of │ separators
+      const taskLines = lines.filter(
+        (line: string) =>
+          (line.includes('shortName') ||
+            line.includes('veryLongTaskNameHere')) &&
+          line.includes('│')
+      )
+
+      taskLines.forEach((line: string) => {
+        // Should have exactly 3 separators (4 columns)
+        const separators = (line.match(/│/g) || []).length
+        expect(separators).toBe(3)
+      })
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should show correct timeline width', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      await all(
+        {
+          async task() {
+            await sleep(50)
+            return 1
+          },
+        },
+        { debug: true }
+      )
+
+      const output = consoleSpy.mock.calls[0][0]
+      const lines = output.split('\n')
+      const taskLine = lines.find(
+        (line: string) => line.includes('task') && line.includes('█')
+      )
+
+      if (taskLine) {
+        // Timeline should be at least 60 characters (the chart width)
+        const parts = taskLine.split('│')
+        const timeline = parts[parts.length - 1]
+        // Timeline column should be consistently sized
+        expect(timeline.length).toBeGreaterThanOrEqual(60)
+      }
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should display durations in milliseconds with precision', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      await all(
+        {
+          async quickTask() {
+            await sleep(15)
+            return 1
+          },
+          async slowerTask() {
+            await sleep(55)
+            return 2
+          },
+        },
+        { debug: true }
+      )
+
+      const output = consoleSpy.mock.calls[0][0]
+
+      // Should show durations with decimal precision (e.g., "15.2ms", "55.7ms")
+      expect(output).toMatch(/\d+\.\d+ms/)
+
+      // Total duration should also be present
+      expect(output).toMatch(/Total Duration: \d+\.\d+ms/)
+
+      consoleSpy.mockRestore()
     })
   })
 })
