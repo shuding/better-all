@@ -4,3 +4,4 @@ coverage/
 *.log
 .DS_Store
 .claude
+.pnpm-store/
