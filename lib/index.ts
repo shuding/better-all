@@ -506,9 +506,9 @@ type FlowTaskContext<T extends Record<string, (...args: any[]) => any>> = {
 }
 
 // Union type of all possible return types from tasks
-type FlowResult<T extends Record<string, (...args: any[]) => any>> = TaskResult<
-  T[keyof T]
->
+type FlowResult<T extends Record<string, (...args: any[]) => any>> = {
+  [K in keyof T]: TaskResult<T[K]>
+}[keyof T]
 
 /**
  * Execute tasks with automatic dependency resolution and support for early exit.
@@ -716,8 +716,7 @@ export function experimental_flow<T extends Record<string, any>>(
       return flowEndValue
     }
 
-    // Otherwise, this shouldn't happen in normal usage
-    // Return undefined or throw an error
+    // No task called $end() - this is an error
     throw new Error(
       'experimental_flow completed without any task calling $end()'
     )
