@@ -2226,17 +2226,16 @@ describe('experimental_flow', () => {
   })
 
   describe('Edge cases', () => {
-    it('should throw error if no task calls $end()', async () => {
-      await expect(
-        experimental_flow({
-          async task1() {
-            return 1
-          },
-          async task2() {
-            return 2
-          },
-        })
-      ).rejects.toThrow('experimental_flow completed without any task calling $end()')
+    it('should return undefined if no task calls $end()', async () => {
+      const result = await experimental_flow({
+        async task1() {
+          return 1
+        },
+        async task2() {
+          return 2
+        },
+      })
+      expect(result).toBeUndefined()
     })
 
     it('should handle $end() with undefined value', async () => {
