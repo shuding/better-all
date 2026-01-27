@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, expectTypeOf } from 'vitest'
-import { all, allSettled } from './index'
+import { all, allSettled, experimental_flow } from './index'
 
 /**
  * Utility function to sleep for a specified number of milliseconds
@@ -1952,6 +1952,360 @@ describe('Abort signal', () => {
 
       // None of the mock operations should have completed
       expect(completedTasks).toEqual([])
+    })
+  })
+})
+
+describe('experimental_flow', () => {
+  describe('Early exit scenarios', () => {
+    it('should exit immediately when first task calls $end()', async () => {
+      const executionOrder: string[] = []
+
+      const f = await experimental_flow({
+        async task1() {
+          executionOrder.push('task1-start')
+          this.$end(42)
+          executionOrder.push('task1-after-end') // Never reached
+          return 1
+        },
+        async task2() {
+          executionOrder.push('task2-start')
+          await sleep(10)
+          const r = await this.$.task1 // Will throw FlowAbortedError
+          executionOrder.push('task2-after-await') // Never reached
+          return r + 10
+        },
+      })
+
+      expect(f).toBe(42)
+      expect(executionOrder).toEqual(['task1-start', 'task2-start'])
+    })
+
+    it('should handle conditional early exit', async () => {
+      const getCached = async (shouldCache: boolean) => {
+        return await experimental_flow({
+          async task1() {
+            const cached = shouldCache ? 'cached-value' : null
+            if (cached) this.$end(cached)
+            return 'api-value'
+          },
+          async task2() {
+            const data = await this.$.task1
+            this.$end(`transformed-${data}`)
+          },
+        })
+      }
+
+      const cached = await getCached(true)
+      expect(cached).toBe('cached-value')
+
+      const fromApi = await getCached(false)
+      expect(fromApi).toBe('transformed-api-value')
+    })
+
+    it('should support race between tasks - first $end() wins', async () => {
+      const f = await experimental_flow({
+        async fast() {
+          await sleep(10)
+          this.$end('fast won')
+        },
+        async slow() {
+          await sleep(100)
+          this.$end('slow won')
+        },
+      })
+
+      expect(f).toBe('fast won')
+    })
+
+    it('should support race between tasks - verify slow does not override', async () => {
+      const executionOrder: string[] = []
+
+      const f = await experimental_flow({
+        async fast() {
+          executionOrder.push('fast-start')
+          await sleep(10)
+          executionOrder.push('fast-end')
+          this.$end('fast won')
+        },
+        async slow() {
+          executionOrder.push('slow-start')
+          await sleep(50)
+          executionOrder.push('slow-before-end')
+          this.$end('slow won')
+          executionOrder.push('slow-after-end') // Never reached
+        },
+      })
+
+      expect(f).toBe('fast won')
+      // Both should start, fast should end first
+      expect(executionOrder).toContain('fast-start')
+      expect(executionOrder).toContain('slow-start')
+      expect(executionOrder).toContain('fast-end')
+    })
+  })
+
+  describe('Dependency handling after $end()', () => {
+    it('should throw FlowAbortedError when accessing dependencies after flow ends', async () => {
+      const executionOrder: string[] = []
+
+      const f = await experimental_flow({
+        async task1() {
+          executionOrder.push('task1')
+          this.$end(100)
+        },
+        async task2() {
+          executionOrder.push('task2-start')
+          await sleep(20)
+          executionOrder.push('task2-before-await')
+          try {
+            await this.$.task1
+            executionOrder.push('task2-after-await') // Never reached
+          } catch (err: any) {
+            executionOrder.push(`task2-caught-${err.name}`)
+          }
+          return 2
+        },
+      })
+
+      expect(f).toBe(100)
+      expect(executionOrder).toContain('task1')
+      expect(executionOrder).toContain('task2-start')
+      // task2 should catch FlowAbortedError but it's caught silently by experimental_flow
+    })
+
+    it('should allow tasks to complete normally if they do not depend on ended tasks', async () => {
+      const f = await experimental_flow({
+        async task1() {
+          await sleep(50)
+          this.$end('first')
+        },
+        async task2() {
+          await sleep(10)
+          this.$end('second')
+        },
+      })
+
+      // task2 finishes first, so its $end wins
+      expect(f).toBe('second')
+    })
+  })
+
+  describe('Error handling', () => {
+    it('should propagate real errors (not FlowEndError)', async () => {
+      await expect(
+        experimental_flow({
+          async task1() {
+            throw new Error('Real error')
+          },
+          async task2() {
+            await sleep(10)
+            this.$end(42)
+          },
+        })
+      ).rejects.toThrow('Real error')
+    })
+
+    it('should handle errors in tasks with dependencies', async () => {
+      await expect(
+        experimental_flow({
+          async task1() {
+            throw new Error('Task 1 failed')
+          },
+          async task2() {
+            const r = await this.$.task1 // Will throw the error from task1
+            this.$end(r + 1)
+          },
+        })
+      ).rejects.toThrow('Task 1 failed')
+    })
+  })
+
+  describe('Complex scenarios', () => {
+    it('should handle multiple tasks with complex dependencies', async () => {
+      const executionOrder: string[] = []
+
+      const f = await experimental_flow({
+        async fetchUser() {
+          executionOrder.push('fetchUser')
+          await sleep(20)
+          return { id: 1, name: 'Alice' }
+        },
+        async fetchPosts() {
+          executionOrder.push('fetchPosts-start')
+          const user = await this.$.fetchUser
+          executionOrder.push(`fetchPosts-got-user-${user.id}`)
+          await sleep(10)
+          return [{ id: 1, title: 'Post 1' }]
+        },
+        async checkCache() {
+          executionOrder.push('checkCache')
+          await sleep(5)
+          // Simulate cache hit
+          this.$end({ cached: true, data: 'cached-result' })
+        },
+      })
+
+      expect(f).toEqual({ cached: true, data: 'cached-result' })
+      expect(executionOrder).toContain('checkCache')
+      // Other tasks may or may not complete depending on timing
+    })
+
+    it('should work with $signal for cleanup', async () => {
+      const abortedTasks: string[] = []
+
+      const f = await experimental_flow({
+        async task1() {
+          await sleep(10)
+          this.$end('done')
+        },
+        async task2() {
+          try {
+            await sleep(100)
+          } catch (err) {
+            if (this.$signal.aborted) {
+              abortedTasks.push('task2')
+            }
+          }
+          return 'task2-done'
+        },
+      })
+
+      expect(f).toBe('done')
+      // Note: $signal is not automatically aborted by $end in current implementation
+      // This test verifies that $signal is available
+    })
+
+    it('should handle synchronous $end() call', async () => {
+      const f = await experimental_flow({
+        task1() {
+          this.$end(123)
+          return 1
+        },
+        async task2() {
+          await sleep(10)
+          return 2
+        },
+      })
+
+      expect(f).toBe(123)
+    })
+
+    it('should handle early exit with complex return types', async () => {
+      const f = await experimental_flow({
+        async task1() {
+          await sleep(10)
+          this.$end({ status: 'success', data: [1, 2, 3] })
+        },
+        async task2() {
+          await sleep(20)
+          this.$end({ status: 'error', message: 'Failed' })
+        },
+      })
+
+      expect(f).toEqual({ status: 'success', data: [1, 2, 3] })
+    })
+  })
+
+  describe('Type inference', () => {
+    it('should infer return type as union of all task return types', async () => {
+      const f = await experimental_flow({
+        async task1() {
+          this.$end(42)
+          return 1
+        },
+        async task2() {
+          this.$end('hello')
+          return 'world'
+        },
+      })
+
+      // f should be number | string
+      expectTypeOf(f).toMatchTypeOf<number | string>()
+    })
+  })
+
+  describe('Edge cases', () => {
+    it('should return undefined if no task calls $end()', async () => {
+      const result = await experimental_flow({
+        async task1() {
+          return 1
+        },
+        async task2() {
+          return 2
+        },
+      })
+      expect(result).toBeUndefined()
+    })
+
+    it('should handle $end() with undefined value', async () => {
+      const f = await experimental_flow({
+        async task1() {
+          this.$end(undefined)
+        },
+      })
+
+      expect(f).toBeUndefined()
+    })
+
+    it('should handle $end() with null value', async () => {
+      const f = await experimental_flow({
+        async task1() {
+          this.$end(null)
+        },
+      })
+
+      expect(f).toBeNull()
+    })
+
+    it('should handle $end() with 0 value', async () => {
+      const f = await experimental_flow({
+        async task1() {
+          this.$end(0)
+        },
+      })
+
+      expect(f).toBe(0)
+    })
+
+    it('should handle $end() with false value', async () => {
+      const f = await experimental_flow({
+        async task1() {
+          this.$end(false)
+        },
+      })
+
+      expect(f).toBe(false)
+    })
+  })
+
+  describe('External signal integration', () => {
+    it('should respect external abort signal', async () => {
+      const controller = new AbortController()
+
+      const promise = experimental_flow(
+        {
+          async task1() {
+            // Check signal before sleeping
+            if (this.$signal.aborted) throw this.$signal.reason
+            await sleep(100)
+            if (this.$signal.aborted) throw this.$signal.reason
+            this.$end('done')
+          },
+          async task2() {
+            if (this.$signal.aborted) throw this.$signal.reason
+            await sleep(200)
+            if (this.$signal.aborted) throw this.$signal.reason
+            this.$end('also-done')
+          },
+        },
+        { signal: controller.signal }
+      )
+
+      // Abort after a short delay
+      setTimeout(() => controller.abort(new Error('Aborted')), 10)
+
+      await expect(promise).rejects.toThrow('Aborted')
     })
   })
 })

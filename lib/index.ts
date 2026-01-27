@@ -52,6 +52,11 @@ type ExecutionOptions = {
   signal?: AbortSignal
 }
 
+// Internal options for executeTasksInternal
+type InternalExecutionOptions = ExecutionOptions & {
+  flowMode?: boolean
+}
+
 // Tracking info for debug mode
 type TaskTiming = {
   name: string
@@ -164,12 +169,12 @@ function generateWaterfallChart(timings: TaskTiming[]): string {
 
 /**
  * Internal core implementation for executing tasks with automatic dependency resolution.
- * This is shared between `all` and `allSettled`.
+ * This is shared between `all`, `allSettled`, and `experimental_flow`.
  */
 function executeTasksInternal<T extends Record<string, any>>(
   tasks: T,
   handleSettled: boolean,
-  options: ExecutionOptions = {}
+  options: InternalExecutionOptions = {}
 ): Promise<any> {
   const taskNames = Object.keys(tasks) as (keyof T)[]
   const results = new Map<keyof T, any>()
@@ -179,6 +184,10 @@ function executeTasksInternal<T extends Record<string, any>>(
     [(value: any) => void, (reason?: any) => void][]
   >()
   const returnValue: Record<string, any> = {}
+
+  // Flow mode tracking
+  let flowEnded = false
+  let flowEndValue: any = undefined
 
   // Create internal abort controller for auto-abort on failure and external signal propagation
   const internalController = new AbortController()
@@ -211,6 +220,11 @@ function executeTasksInternal<T extends Record<string, any>>(
   const waitForDep = (taskName: keyof T, depName: keyof T): Promise<any> => {
     if (!(depName in tasks)) {
       return Promise.reject(new Error(`Unknown task "${String(depName)}"`))
+    }
+
+    // In flow mode, if flow has ended, reject with FlowAbortedError
+    if (options.flowMode && flowEnded) {
+      return Promise.reject(new FlowAbortedError())
     }
 
     // Track dependency for debug mode
@@ -270,7 +284,7 @@ function executeTasksInternal<T extends Record<string, any>>(
     results.set(name, value)
     if (handleSettled) {
       returnValue[name as string] = { status: 'fulfilled', value }
-    } else {
+    } else if (!options.flowMode) {
       returnValue[name as string] = value
     }
     if (resolvers.has(name)) {
@@ -312,10 +326,26 @@ function executeTasksInternal<T extends Record<string, any>>(
         },
       })
 
-      const context: TaskContext<T> = {
+      // Create $end function for flow mode
+      const $end = options.flowMode
+        ? (value: any): never => {
+            if (!flowEnded) {
+              flowEnded = true
+              flowEndValue = value
+            }
+            throw new FlowEndError(value)
+          }
+        : undefined
+
+      const context: any = {
         $: depProxy,
         $signal: internalController.signal,
       }
+
+      if (options.flowMode && $end) {
+        context.$end = $end
+      }
+
       const result = await taskFn.call(context)
 
       // Track end time and create timing record
@@ -335,6 +365,18 @@ function executeTasksInternal<T extends Record<string, any>>(
 
       handleResult(name, result)
     } catch (err) {
+      // In flow mode, handle FlowEndError and FlowAbortedError specially
+      if (options.flowMode) {
+        if (err instanceof FlowEndError) {
+          // This is intentional early exit, don't propagate as error
+          return
+        }
+        if (err instanceof FlowAbortedError) {
+          // Flow was ended by another task, silently ignore
+          return
+        }
+      }
+
       // Track end time for failed tasks too
       if (options.debug) {
         const endTime = performance.now()
@@ -359,16 +401,43 @@ function executeTasksInternal<T extends Record<string, any>>(
     }
   })
 
-  const finalPromise = handleSettled
-    ? // For allSettled, wait for all promises to settle (never rejects)
-      Promise.allSettled(promises).then(() => returnValue)
-    : // For all, reject on first error (like Promise.all)
-      Promise.all(promises).then(() => returnValue)
+  const finalPromise = options.flowMode
+    ? // For flow mode, use allSettled and handle flow end
+      Promise.allSettled(promises).then((results) => {
+        cleanupController.abort()
+
+        // Check if external signal was aborted
+        if (options.signal?.aborted) {
+          throw options.signal.reason || new Error('Aborted')
+        }
+
+        // Check if any task had a real error
+        for (const result of results) {
+          if (result.status === 'rejected') {
+            throw result.reason
+          }
+        }
+
+        // If flow ended early, return that value
+        if (flowEnded) {
+          return flowEndValue
+        }
+
+        // No task called $end() - return undefined
+        return undefined
+      })
+    : handleSettled
+      ? // For allSettled, wait for all promises to settle (never rejects)
+        Promise.allSettled(promises).then(() => returnValue)
+      : // For all, reject on first error (like Promise.all)
+        Promise.all(promises).then(() => returnValue)
 
   // Cleanup external signal listener when tasks complete
-  const withCleanup = finalPromise.finally(() => {
-    cleanupController.abort()
-  })
+  const withCleanup = options.flowMode
+    ? finalPromise
+    : finalPromise.finally(() => {
+        cleanupController.abort()
+      })
 
   // Output waterfall chart in debug mode
   if (options.debug) {
@@ -474,4 +543,105 @@ export function allSettled<T extends Record<string, any>>(
   return executeTasksInternal(tasks, true, options) as Promise<
     AllSettledResult<T>
   >
+}
+
+/**
+ * Custom error class for early exit via $end()
+ * @internal
+ */
+class FlowEndError extends Error {
+  constructor(public readonly value: any) {
+    super('Flow ended early')
+    this.name = 'FlowEndError'
+  }
+}
+
+/**
+ * Custom error class for aborted dependency access
+ * @internal
+ */
+class FlowAbortedError extends Error {
+  constructor() {
+    super('Flow has been ended, cannot access dependencies')
+    this.name = 'FlowAbortedError'
+  }
+}
+
+// Context available to each task in experimental_flow via `this`
+type FlowTaskContext<T extends Record<string, (...args: any[]) => any>> = {
+  $: DepProxy<T>
+  $signal: AbortSignal
+  $end: (value: any) => never
+}
+
+// Union type of all possible return types from tasks
+type FlowResult<T extends Record<string, (...args: any[]) => any>> = {
+  [K in keyof T]: TaskResult<T[K]>
+}[keyof T]
+
+/**
+ * Execute tasks with automatic dependency resolution and support for early exit.
+ * The first task to call `this.$end(value)` determines the return value.
+ *
+ * @example
+ * // Early exit from first task
+ * const f = await experimental_flow({
+ *   async task1() {
+ *     this.$end(42)  // Immediately ends, f = 42
+ *     return 1       // Never reached
+ *   },
+ *   async task2() {
+ *     const r = await this.$.task1  // Throws (silently caught)
+ *     return r + 10
+ *   },
+ * })
+ * // f = 42
+ *
+ * @example
+ * // Conditional early exit
+ * const f = await experimental_flow({
+ *   async task1() {
+ *     const cached = await checkCache()
+ *     if (cached) this.$end(cached)  // Early exit if cached
+ *     return await fetchFromApi()
+ *   },
+ *   async task2() {
+ *     const data = await this.$.task1
+ *     this.$end(transform(data))
+ *   },
+ * })
+ *
+ * @example
+ * // Race between tasks
+ * const f = await experimental_flow({
+ *   async fast() {
+ *     await sleep(100)
+ *     this.$end('fast won')
+ *   },
+ *   async slow() {
+ *     await sleep(1000)
+ *     this.$end('slow won')
+ *   },
+ * })
+ * // f = 'fast won'
+ */
+export function experimental_flow<T extends Record<string, any>>(
+  tasks: T &
+    ThisType<{
+      $: {
+        [K in keyof T]: ReturnType<T[K]> extends Promise<infer R>
+          ? Promise<R>
+          : Promise<ReturnType<T[K]>>
+      }
+      $signal: AbortSignal
+      $end: (value: any) => never
+    }> & {
+      [P in keyof T]: T[P] extends (...args: any[]) => any ? T[P] : never
+    },
+  options?: ExecutionOptions
+): Promise<FlowResult<T>> {
+  return executeTasksInternal(tasks, false, {
+    ...options,
+    flowMode: true,
+  }) as Promise<FlowResult<T>>
 }
