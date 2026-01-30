@@ -568,16 +568,14 @@ class FlowAbortedError extends Error {
 }
 
 // Context available to each task in flow via `this`
-type FlowTaskContext<T extends Record<string, (...args: any[]) => any>> = {
+type FlowTaskContext<
+  T extends Record<string, (...args: any[]) => any>,
+  R
+> = {
   $: DepProxy<T>
   $signal: AbortSignal
-  $end: (value: any) => never
+  $end: (value: R) => never
 }
-
-// Union type of all possible return types from tasks
-type FlowResult<T extends Record<string, (...args: any[]) => any>> = {
-  [K in keyof T]: TaskResult<T[K]>
-}[keyof T]
 
 /**
  * Execute tasks with automatic dependency resolution and support for early exit.
@@ -585,7 +583,7 @@ type FlowResult<T extends Record<string, (...args: any[]) => any>> = {
  *
  * @example
  * // Early exit from first task
- * const f = await flow({
+ * const f = await flow<number>({
  *   async task1() {
  *     this.$end(42)  // Immediately ends, f = 42
  *     return 1       // Never reached
@@ -599,7 +597,7 @@ type FlowResult<T extends Record<string, (...args: any[]) => any>> = {
  *
  * @example
  * // Conditional early exit
- * const f = await flow({
+ * const f = await flow<string>({
  *   async task1() {
  *     const cached = await checkCache()
  *     if (cached) this.$end(cached)  // Early exit if cached
@@ -613,7 +611,7 @@ type FlowResult<T extends Record<string, (...args: any[]) => any>> = {
  *
  * @example
  * // Race between tasks
- * const f = await flow({
+ * const f = await flow<string>({
  *   async fast() {
  *     await sleep(100)
  *     this.$end('fast won')
@@ -625,23 +623,23 @@ type FlowResult<T extends Record<string, (...args: any[]) => any>> = {
  * })
  * // f = 'fast won'
  */
-export function flow<T extends Record<string, any>>(
+export function flow<R, T extends Record<string, any> = Record<string, any>>(
   tasks: T &
     ThisType<{
       $: {
-        [K in keyof T]: ReturnType<T[K]> extends Promise<infer R>
-          ? Promise<R>
+        [K in keyof T]: ReturnType<T[K]> extends Promise<infer U>
+          ? Promise<U>
           : Promise<ReturnType<T[K]>>
       }
       $signal: AbortSignal
-      $end: (value: any) => never
+      $end: (value: R) => never
     }> & {
       [P in keyof T]: T[P] extends (...args: any[]) => any ? T[P] : never
     },
   options?: ExecutionOptions
-): Promise<FlowResult<T>> {
+): Promise<R | undefined> {
   return executeTasksInternal(tasks, false, {
     ...options,
     flowMode: true,
-  }) as Promise<FlowResult<T>>
+  }) as Promise<R | undefined>
 }

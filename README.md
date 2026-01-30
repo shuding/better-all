@@ -129,18 +129,20 @@ Execute tasks with automatic dependency resolution, returning settled results fo
 - Never rejects - failed tasks are included in the result (like `Promise.allSettled`)
 - If a task depends on a failed task, the dependent task will also fail unless it catches the error
 
-### `flow(tasks, options?)`
+### `flow<R>(tasks, options?)`
 
 Execute tasks with automatic dependency resolution and early exit support.
 
+- **Type parameter `<R>`**: **Required**. Specifies the return type that `$end()` must accept
 - `tasks`: Object of async task functions
 - `options`: Same as `all()` - optional configuration object
 - Each task function receives:
   - `this.$` - an object with promises for all task results
   - `this.$signal` - an `AbortSignal` for resource cleanup
-  - `this.$end(value)` - function to exit the entire flow early with a return value
-- Returns a promise that resolves to the value passed to the first `$end()` call
-- Returns `undefined` if no task calls `$end()`
+  - `this.$end(value: R)` - function to exit the entire flow early with a return value of type `R`
+- Returns a promise that resolves to `R | undefined`
+  - Returns the value passed to the first `$end()` call
+  - Returns `undefined` if no task calls `$end()`
 - See [Early Exit Flow](#early-exit-flow) for detailed usage
 
 ## Examples
@@ -430,7 +432,7 @@ Execute tasks with automatic dependency resolution, but allow any task to end th
 ```typescript
 import { flow } from 'better-all'
 
-const data = await flow({
+const data = await flow<YourDataType>({
   async checkCache() {
     const cached = await getFromCache('key')
     if (cached) this.$end(cached)  // Exit early with cached data
@@ -450,7 +452,7 @@ const data = await flow({
 ### Racing Operations
 
 ```typescript
-const result = await flow({
+const result = await flow<ResponseData>({
   async fetchFromPrimary() {
     await sleep(100)
     const data = await fetch('/api/primary')
@@ -468,7 +470,7 @@ const result = await flow({
 ### Conditional Early Exit
 
 ```typescript
-const result = await flow({
+const result = await flow<{ error: string } | ProcessedData>({
   async validateInput() {
     const isValid = await validate(input)
     if (!isValid) this.$end({ error: 'Invalid input' })
@@ -484,10 +486,10 @@ const result = await flow({
 
 ### Return Type
 
-The return type is a union of all possible task return types:
+You must specify the return type as a type parameter to `flow`:
 
 ```typescript
-const result = await flow({
+const result = await flow<number | string>({
   async task1() {
     this.$end(42)  // number
     return 1
@@ -497,10 +499,11 @@ const result = await flow({
     return 'world'
   }
 })
-// result: number | string
+// result: number | string | undefined
 ```
 
 **⚠️ Important Notes:**
+- The type parameter `<R>` is **required** and specifies what type `$end()` accepts
 - If no task calls `this.$end()`, the flow will return `undefined`
 - Once `$end()` is called, subsequent dependency accesses will fail (but are caught silently)
 - `$end()` stops the current task execution (throws internally)

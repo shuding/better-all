@@ -1961,7 +1961,7 @@ describe('flow', () => {
     it('should exit immediately when first task calls $end()', async () => {
       const executionOrder: string[] = []
 
-      const f = await flow({
+      const f = await flow<number>({
         async task1() {
           executionOrder.push('task1-start')
           this.$end(42)
@@ -1983,7 +1983,7 @@ describe('flow', () => {
 
     it('should handle conditional early exit', async () => {
       const getCached = async (shouldCache: boolean) => {
-        return await flow({
+        return await flow<string>({
           async task1() {
             const cached = shouldCache ? 'cached-value' : null
             if (cached) this.$end(cached)
@@ -2004,7 +2004,7 @@ describe('flow', () => {
     })
 
     it('should support race between tasks - first $end() wins', async () => {
-      const f = await flow({
+      const f = await flow<string>({
         async fast() {
           await sleep(10)
           this.$end('fast won')
@@ -2021,7 +2021,7 @@ describe('flow', () => {
     it('should support race between tasks - verify slow does not override', async () => {
       const executionOrder: string[] = []
 
-      const f = await flow({
+      const f = await flow<string>({
         async fast() {
           executionOrder.push('fast-start')
           await sleep(10)
@@ -2049,7 +2049,7 @@ describe('flow', () => {
     it('should throw FlowAbortedError when accessing dependencies after flow ends', async () => {
       const executionOrder: string[] = []
 
-      const f = await flow({
+      const f = await flow<number>({
         async task1() {
           executionOrder.push('task1')
           this.$end(100)
@@ -2075,7 +2075,7 @@ describe('flow', () => {
     })
 
     it('should allow tasks to complete normally if they do not depend on ended tasks', async () => {
-      const f = await flow({
+      const f = await flow<string>({
         async task1() {
           await sleep(50)
           this.$end('first')
@@ -2094,7 +2094,7 @@ describe('flow', () => {
   describe('Error handling', () => {
     it('should propagate real errors (not FlowEndError)', async () => {
       await expect(
-        flow({
+        flow<number>({
           async task1() {
             throw new Error('Real error')
           },
@@ -2108,7 +2108,7 @@ describe('flow', () => {
 
     it('should handle errors in tasks with dependencies', async () => {
       await expect(
-        flow({
+        flow<number>({
           async task1() {
             throw new Error('Task 1 failed')
           },
@@ -2125,7 +2125,7 @@ describe('flow', () => {
     it('should handle multiple tasks with complex dependencies', async () => {
       const executionOrder: string[] = []
 
-      const f = await flow({
+      const f = await flow<{ cached: boolean; data: string }>({
         async fetchUser() {
           executionOrder.push('fetchUser')
           await sleep(20)
@@ -2154,7 +2154,7 @@ describe('flow', () => {
     it('should work with $signal for cleanup', async () => {
       const abortedTasks: string[] = []
 
-      const f = await flow({
+      const f = await flow<string>({
         async task1() {
           await sleep(10)
           this.$end('done')
@@ -2177,7 +2177,7 @@ describe('flow', () => {
     })
 
     it('should handle synchronous $end() call', async () => {
-      const f = await flow({
+      const f = await flow<number>({
         task1() {
           this.$end(123)
           return 1
@@ -2192,7 +2192,9 @@ describe('flow', () => {
     })
 
     it('should handle early exit with complex return types', async () => {
-      const f = await flow({
+      const f = await flow<
+        { status: 'success'; data: number[] } | { status: 'error'; message: string }
+      >({
         async task1() {
           await sleep(10)
           this.$end({ status: 'success', data: [1, 2, 3] })
@@ -2208,8 +2210,8 @@ describe('flow', () => {
   })
 
   describe('Type inference', () => {
-    it('should infer return type as union of all task return types', async () => {
-      const f = await flow({
+    it('should require explicit type parameter', async () => {
+      const f = await flow<number | string>({
         async task1() {
           this.$end(42)
           return 1
@@ -2220,14 +2222,14 @@ describe('flow', () => {
         },
       })
 
-      // f should be number | string
-      expectTypeOf(f).toMatchTypeOf<number | string>()
+      // f should be number | string | undefined
+      expectTypeOf(f).toMatchTypeOf<number | string | undefined>()
     })
   })
 
   describe('Edge cases', () => {
     it('should return undefined if no task calls $end()', async () => {
-      const result = await flow({
+      const result = await flow<number>({
         async task1() {
           return 1
         },
@@ -2239,7 +2241,7 @@ describe('flow', () => {
     })
 
     it('should handle $end() with undefined value', async () => {
-      const f = await flow({
+      const f = await flow<undefined>({
         async task1() {
           this.$end(undefined)
         },
@@ -2249,7 +2251,7 @@ describe('flow', () => {
     })
 
     it('should handle $end() with null value', async () => {
-      const f = await flow({
+      const f = await flow<null>({
         async task1() {
           this.$end(null)
         },
@@ -2259,7 +2261,7 @@ describe('flow', () => {
     })
 
     it('should handle $end() with 0 value', async () => {
-      const f = await flow({
+      const f = await flow<number>({
         async task1() {
           this.$end(0)
         },
@@ -2269,7 +2271,7 @@ describe('flow', () => {
     })
 
     it('should handle $end() with false value', async () => {
-      const f = await flow({
+      const f = await flow<boolean>({
         async task1() {
           this.$end(false)
         },
@@ -2283,7 +2285,7 @@ describe('flow', () => {
     it('should respect external abort signal', async () => {
       const controller = new AbortController()
 
-      const promise = flow(
+      const promise = flow<string>(
         {
           async task1() {
             // Check signal before sleeping
