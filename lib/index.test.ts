@@ -245,7 +245,7 @@ describe('all', () => {
           async b() {
             return 2
           },
-        })
+        }),
       ).rejects.toThrow('Task a failed')
     })
 
@@ -259,7 +259,7 @@ describe('all', () => {
             await this.$.a
             throw new Error('Task b failed')
           },
-        })
+        }),
       ).rejects.toThrow('Task b failed')
     })
 
@@ -274,7 +274,7 @@ describe('all', () => {
             const aValue = await this.$.a
             return aValue + 10
           },
-        })
+        }),
       ).rejects.toThrow('Task a failed')
     })
 
@@ -285,7 +285,7 @@ describe('all', () => {
             await (this.$ as any).unknownTask
             return 1
           },
-        })
+        }),
       ).rejects.toThrow('Unknown task "unknownTask"')
     })
 
@@ -298,7 +298,7 @@ describe('all', () => {
           async b() {
             throw new Error('Task b failed')
           },
-        })
+        }),
       ).rejects.toThrow()
     })
   })
@@ -530,20 +530,35 @@ describe('all', () => {
 
     it('should error on non-function task definitions', async () => {
       await expect(
+        // @ts-expect-error
         all({
-          // @ts-expect-error
           invalidTask: 1,
-        })
+        }),
       ).rejects.toThrow('Task "invalidTask" is not a function')
 
       await expect(
+        // @ts-expect-error
         all({
-          // @ts-expect-error
           invalidTask: {
             a: 1,
           },
-        })
+        }),
       ).rejects.toThrow('Task "invalidTask" is not a function')
+    })
+
+    it('should allow functions with optional arguments', async () => {
+      async function a(options?: number) {
+        return options ?? 1
+      }
+
+      const result = await all({
+        a,
+        async b() {
+          return (await this.$.a) + 2
+        },
+      })
+      expect(result.a).toBe(1)
+      expect(result.b).toBe(3)
     })
   })
 
@@ -716,7 +731,7 @@ describe('allSettled', () => {
         reason: expect.any(Error),
       })
       expect(result.b.status === 'rejected' && result.b.reason.message).toBe(
-        'Task b failed'
+        'Task b failed',
       )
       expect(result.c).toEqual({ status: 'fulfilled', value: 3 })
     })
@@ -1084,7 +1099,7 @@ describe('Debug mode', () => {
             return aValue + 10
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       expect(result).toEqual({ a: 1, b: 2, c: 11 })
@@ -1118,7 +1133,7 @@ describe('Debug mode', () => {
             return aValue + bValue
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       const output = consoleSpy.mock.calls[0][0]
@@ -1159,7 +1174,7 @@ describe('Debug mode', () => {
             throw new Error()
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       const output = consoleSpy.mock.calls[0][0]
@@ -1170,7 +1185,7 @@ describe('Debug mode', () => {
       // multiWaitTask should show: ░(wait for fast) █(30ms active) ░(wait for slow) █(10ms active)
       const lines = output.split('\n')
       const multiWaitLine = lines.find((line: string) =>
-        line.includes('multiWaitTask')
+        line.includes('multiWaitTask'),
       )
       expect(multiWaitLine).toBeDefined()
 
@@ -1196,7 +1211,7 @@ describe('Debug mode', () => {
             return aValue + bValue
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       const output = consoleSpy.mock.calls[0][0]
@@ -1220,7 +1235,7 @@ describe('Debug mode', () => {
             return 2
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       expect(result).toEqual({ a: 1, b: 2 })
@@ -1242,8 +1257,8 @@ describe('Debug mode', () => {
               return 2
             },
           },
-          { debug: true }
-        )
+          { debug: true },
+        ),
       ).rejects.toThrow('a failed')
 
       expect(consoleSpy).toHaveBeenCalledTimes(1)
@@ -1270,7 +1285,7 @@ describe('Debug mode', () => {
             return 3
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       expect(result.a).toEqual({ status: 'fulfilled', value: 1 })
@@ -1299,7 +1314,7 @@ describe('Debug mode', () => {
             return 'ok'
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       const output = consoleSpy.mock.calls[0][0]
@@ -1334,7 +1349,7 @@ describe('Debug mode', () => {
             return aValue + 10
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       const output = consoleSpy.mock.calls[0][0]
@@ -1392,7 +1407,7 @@ describe('Debug mode', () => {
             return 'done'
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       const output = consoleSpy.mock.calls[0][0]
@@ -1421,7 +1436,7 @@ describe('Debug mode', () => {
             return 3
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       const output = consoleSpy.mock.calls[0][0]
@@ -1452,7 +1467,7 @@ describe('Debug mode', () => {
             return await this.$.c
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       const output = consoleSpy.mock.calls[0][0]
@@ -1489,7 +1504,7 @@ describe('Debug mode', () => {
             return 2
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       const output = consoleSpy.mock.calls[0][0]
@@ -1504,7 +1519,7 @@ describe('Debug mode', () => {
         (line: string) =>
           (line.includes('shortName') ||
             line.includes('veryLongTaskNameHere')) &&
-          line.includes('│')
+          line.includes('│'),
       )
 
       taskLines.forEach((line: string) => {
@@ -1526,13 +1541,13 @@ describe('Debug mode', () => {
             return 1
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       const output = consoleSpy.mock.calls[0][0]
       const lines = output.split('\n')
       const taskLine = lines.find(
-        (line: string) => line.includes('task') && line.includes('█')
+        (line: string) => line.includes('task') && line.includes('█'),
       )
 
       if (taskLine) {
@@ -1560,7 +1575,7 @@ describe('Debug mode', () => {
             return 2
           },
         },
-        { debug: true }
+        { debug: true },
       )
 
       const output = consoleSpy.mock.calls[0][0]
@@ -1606,7 +1621,7 @@ describe('Abort signal', () => {
             await sleep(50)
             return 'slow done'
           },
-        })
+        }),
       ).rejects.toThrow('fast failed')
 
       // Give time for abort event to fire
@@ -1631,7 +1646,7 @@ describe('Abort signal', () => {
             await sleep(50)
             return 'done'
           },
-        })
+        }),
       ).rejects.toThrow('task failed')
 
       await sleep(10)
@@ -1655,7 +1670,7 @@ describe('Abort signal', () => {
             checkCompleted = true
             return 'done'
           },
-        })
+        }),
       ).rejects.toThrow('failed')
 
       // Wait for checking task to complete its check
@@ -1682,7 +1697,7 @@ describe('Abort signal', () => {
             return 'done'
           },
         },
-        { signal: controller.signal }
+        { signal: controller.signal },
       )
 
       // Abort after a short delay
@@ -1710,8 +1725,8 @@ describe('Abort signal', () => {
               return 'done'
             },
           },
-          { signal: controller.signal }
-        )
+          { signal: controller.signal },
+        ),
       ).rejects.toThrow('pre-aborted')
 
       expect(signalAborted).toBe(true)
@@ -1814,7 +1829,7 @@ describe('Abort signal', () => {
             return 'done'
           },
         },
-        { signal: controller.signal }
+        { signal: controller.signal },
       )
 
       // Abort after a short delay
@@ -1848,7 +1863,7 @@ describe('Abort signal', () => {
             return 'done'
           },
         },
-        { signal: controller.signal }
+        { signal: controller.signal },
       )
 
       await sleep(10)
@@ -1883,7 +1898,7 @@ describe('Abort signal', () => {
             return (await this.$.a) + 10
           },
         },
-        { signal: controller.signal }
+        { signal: controller.signal },
       )
 
       expect(result).toEqual({ a: 1, b: 11 })
@@ -1912,14 +1927,17 @@ describe('Abort signal', () => {
           async fetching() {
             return mockFetch(this.$signal)
           },
-        })
+        }),
       ).rejects.toThrow('API error')
     })
 
     it('should handle multiple concurrent abort-aware tasks', async () => {
       const completedTasks: string[] = []
 
-      const mockOperation = (name: string, signal: AbortSignal): Promise<string> => {
+      const mockOperation = (
+        name: string,
+        signal: AbortSignal,
+      ): Promise<string> => {
         return new Promise((resolve, reject) => {
           const timeout = setTimeout(() => {
             completedTasks.push(name)
@@ -1947,7 +1965,7 @@ describe('Abort signal', () => {
           async task3() {
             return mockOperation('task3', this.$signal)
           },
-        })
+        }),
       ).rejects.toThrow('First failure')
 
       // None of the mock operations should have completed
