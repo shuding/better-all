@@ -169,7 +169,7 @@ function generateWaterfallChart(timings: TaskTiming[]): string {
 
 /**
  * Internal core implementation for executing tasks with automatic dependency resolution.
- * This is shared between `all`, `allSettled`, and `experimental_flow`.
+ * This is shared between `all`, `allSettled`, and `flow`.
  */
 function executeTasksInternal<T extends Record<string, any>>(
   tasks: T,
@@ -567,7 +567,7 @@ class FlowAbortedError extends Error {
   }
 }
 
-// Context available to each task in experimental_flow via `this`
+// Context available to each task in flow via `this`
 type FlowTaskContext<T extends Record<string, (...args: any[]) => any>> = {
   $: DepProxy<T>
   $signal: AbortSignal
@@ -585,7 +585,7 @@ type FlowResult<T extends Record<string, (...args: any[]) => any>> = {
  *
  * @example
  * // Early exit from first task
- * const f = await experimental_flow({
+ * const f = await flow({
  *   async task1() {
  *     this.$end(42)  // Immediately ends, f = 42
  *     return 1       // Never reached
@@ -599,7 +599,7 @@ type FlowResult<T extends Record<string, (...args: any[]) => any>> = {
  *
  * @example
  * // Conditional early exit
- * const f = await experimental_flow({
+ * const f = await flow({
  *   async task1() {
  *     const cached = await checkCache()
  *     if (cached) this.$end(cached)  // Early exit if cached
@@ -613,7 +613,7 @@ type FlowResult<T extends Record<string, (...args: any[]) => any>> = {
  *
  * @example
  * // Race between tasks
- * const f = await experimental_flow({
+ * const f = await flow({
  *   async fast() {
  *     await sleep(100)
  *     this.$end('fast won')
@@ -625,7 +625,7 @@ type FlowResult<T extends Record<string, (...args: any[]) => any>> = {
  * })
  * // f = 'fast won'
  */
-export function experimental_flow<T extends Record<string, any>>(
+export function flow<T extends Record<string, any>>(
   tasks: T &
     ThisType<{
       $: {

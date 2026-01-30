@@ -95,7 +95,7 @@ yarn add better-all
 - **No hanging promises**: Avoids the uncaught dangling promises problem often seen in manual optimization
 - **Auto-abort on failure**: Cancel remaining tasks when one fails via `this.$signal`
 - **Debug mode with waterfall visualization**: See exactly how tasks execute with ASCII waterfall charts
-- **Early exit support** *(experimental)*: Exit flows early when a result is determined
+- **Early exit support**: Exit flows early when a result is determined
 - **Lightweight**: Minimal dependencies and small bundle size
 
 ## API
@@ -129,7 +129,7 @@ Execute tasks with automatic dependency resolution, returning settled results fo
 - Never rejects - failed tasks are included in the result (like `Promise.allSettled`)
 - If a task depends on a failed task, the dependent task will also fail unless it catches the error
 
-### `experimental_flow(tasks, options?)` *(experimental)*
+### `flow(tasks, options?)`
 
 Execute tasks with automatic dependency resolution and early exit support.
 
@@ -140,8 +140,8 @@ Execute tasks with automatic dependency resolution and early exit support.
   - `this.$signal` - an `AbortSignal` for resource cleanup
   - `this.$end(value)` - function to exit the entire flow early with a return value
 - Returns a promise that resolves to the value passed to the first `$end()` call
-- At least one task must call `$end()`, otherwise it will reject
-- See [Experimental: Early Exit Flow](#experimental-early-exit-flow) for detailed usage
+- Returns `undefined` if no task calls `$end()`
+- See [Early Exit Flow](#early-exit-flow) for detailed usage
 
 ## Examples
 
@@ -406,15 +406,15 @@ const result = await all({
 
 **Note:** `allSettled()` does NOT auto-abort on task failure (to preserve its "wait for all" behavior), but external signal abort still works.
 
-## Experimental: Early Exit Flow
+## Early Exit Flow
 
-`experimental_flow` is an experimental API that allows you to exit early from complex async flows when a task determines the final result. This is useful for optimization patterns like:
+`flow` allows you to exit early from complex async flows when a task determines the final result. This is useful for optimization patterns like:
 
 - **Cache checks**: Exit early if cached data is available
 - **Racing operations**: Return the first successful result
 - **Conditional computations**: Skip remaining work based on intermediate results
 
-### `experimental_flow(tasks, options?)`
+### `flow(tasks, options?)`
 
 Execute tasks with automatic dependency resolution, but allow any task to end the entire flow early by calling `this.$end(value)`.
 
@@ -428,9 +428,9 @@ Execute tasks with automatic dependency resolution, but allow any task to end th
 ### Early Exit from Cache
 
 ```typescript
-import { experimental_flow } from 'better-all'
+import { flow } from 'better-all'
 
-const data = await experimental_flow({
+const data = await flow({
   async checkCache() {
     const cached = await getFromCache('key')
     if (cached) this.$end(cached)  // Exit early with cached data
@@ -450,7 +450,7 @@ const data = await experimental_flow({
 ### Racing Operations
 
 ```typescript
-const result = await experimental_flow({
+const result = await flow({
   async fetchFromPrimary() {
     await sleep(100)
     const data = await fetch('/api/primary')
@@ -468,7 +468,7 @@ const result = await experimental_flow({
 ### Conditional Early Exit
 
 ```typescript
-const result = await experimental_flow({
+const result = await flow({
   async validateInput() {
     const isValid = await validate(input)
     if (!isValid) this.$end({ error: 'Invalid input' })
@@ -487,7 +487,7 @@ const result = await experimental_flow({
 The return type is a union of all possible task return types:
 
 ```typescript
-const result = await experimental_flow({
+const result = await flow({
   async task1() {
     this.$end(42)  // number
     return 1
@@ -501,10 +501,9 @@ const result = await experimental_flow({
 ```
 
 **⚠️ Important Notes:**
-- At least one task MUST call `this.$end()`, otherwise the flow will reject with an error
+- If no task calls `this.$end()`, the flow will return `undefined`
 - Once `$end()` is called, subsequent dependency accesses will fail (but are caught silently)
 - `$end()` stops the current task execution (throws internally)
-- This API is experimental and may change in future versions
 
 ## Development
 

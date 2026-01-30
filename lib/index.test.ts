@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, expectTypeOf } from 'vitest'
-import { all, allSettled, experimental_flow } from './index'
+import { all, allSettled, flow } from './index'
 
 /**
  * Utility function to sleep for a specified number of milliseconds
@@ -1956,12 +1956,12 @@ describe('Abort signal', () => {
   })
 })
 
-describe('experimental_flow', () => {
+describe('flow', () => {
   describe('Early exit scenarios', () => {
     it('should exit immediately when first task calls $end()', async () => {
       const executionOrder: string[] = []
 
-      const f = await experimental_flow({
+      const f = await flow({
         async task1() {
           executionOrder.push('task1-start')
           this.$end(42)
@@ -1983,7 +1983,7 @@ describe('experimental_flow', () => {
 
     it('should handle conditional early exit', async () => {
       const getCached = async (shouldCache: boolean) => {
-        return await experimental_flow({
+        return await flow({
           async task1() {
             const cached = shouldCache ? 'cached-value' : null
             if (cached) this.$end(cached)
@@ -2004,7 +2004,7 @@ describe('experimental_flow', () => {
     })
 
     it('should support race between tasks - first $end() wins', async () => {
-      const f = await experimental_flow({
+      const f = await flow({
         async fast() {
           await sleep(10)
           this.$end('fast won')
@@ -2021,7 +2021,7 @@ describe('experimental_flow', () => {
     it('should support race between tasks - verify slow does not override', async () => {
       const executionOrder: string[] = []
 
-      const f = await experimental_flow({
+      const f = await flow({
         async fast() {
           executionOrder.push('fast-start')
           await sleep(10)
@@ -2049,7 +2049,7 @@ describe('experimental_flow', () => {
     it('should throw FlowAbortedError when accessing dependencies after flow ends', async () => {
       const executionOrder: string[] = []
 
-      const f = await experimental_flow({
+      const f = await flow({
         async task1() {
           executionOrder.push('task1')
           this.$end(100)
@@ -2071,11 +2071,11 @@ describe('experimental_flow', () => {
       expect(f).toBe(100)
       expect(executionOrder).toContain('task1')
       expect(executionOrder).toContain('task2-start')
-      // task2 should catch FlowAbortedError but it's caught silently by experimental_flow
+      // task2 should catch FlowAbortedError but it's caught silently by flow
     })
 
     it('should allow tasks to complete normally if they do not depend on ended tasks', async () => {
-      const f = await experimental_flow({
+      const f = await flow({
         async task1() {
           await sleep(50)
           this.$end('first')
@@ -2094,7 +2094,7 @@ describe('experimental_flow', () => {
   describe('Error handling', () => {
     it('should propagate real errors (not FlowEndError)', async () => {
       await expect(
-        experimental_flow({
+        flow({
           async task1() {
             throw new Error('Real error')
           },
@@ -2108,7 +2108,7 @@ describe('experimental_flow', () => {
 
     it('should handle errors in tasks with dependencies', async () => {
       await expect(
-        experimental_flow({
+        flow({
           async task1() {
             throw new Error('Task 1 failed')
           },
@@ -2125,7 +2125,7 @@ describe('experimental_flow', () => {
     it('should handle multiple tasks with complex dependencies', async () => {
       const executionOrder: string[] = []
 
-      const f = await experimental_flow({
+      const f = await flow({
         async fetchUser() {
           executionOrder.push('fetchUser')
           await sleep(20)
@@ -2154,7 +2154,7 @@ describe('experimental_flow', () => {
     it('should work with $signal for cleanup', async () => {
       const abortedTasks: string[] = []
 
-      const f = await experimental_flow({
+      const f = await flow({
         async task1() {
           await sleep(10)
           this.$end('done')
@@ -2177,7 +2177,7 @@ describe('experimental_flow', () => {
     })
 
     it('should handle synchronous $end() call', async () => {
-      const f = await experimental_flow({
+      const f = await flow({
         task1() {
           this.$end(123)
           return 1
@@ -2192,7 +2192,7 @@ describe('experimental_flow', () => {
     })
 
     it('should handle early exit with complex return types', async () => {
-      const f = await experimental_flow({
+      const f = await flow({
         async task1() {
           await sleep(10)
           this.$end({ status: 'success', data: [1, 2, 3] })
@@ -2209,7 +2209,7 @@ describe('experimental_flow', () => {
 
   describe('Type inference', () => {
     it('should infer return type as union of all task return types', async () => {
-      const f = await experimental_flow({
+      const f = await flow({
         async task1() {
           this.$end(42)
           return 1
@@ -2227,7 +2227,7 @@ describe('experimental_flow', () => {
 
   describe('Edge cases', () => {
     it('should return undefined if no task calls $end()', async () => {
-      const result = await experimental_flow({
+      const result = await flow({
         async task1() {
           return 1
         },
@@ -2239,7 +2239,7 @@ describe('experimental_flow', () => {
     })
 
     it('should handle $end() with undefined value', async () => {
-      const f = await experimental_flow({
+      const f = await flow({
         async task1() {
           this.$end(undefined)
         },
@@ -2249,7 +2249,7 @@ describe('experimental_flow', () => {
     })
 
     it('should handle $end() with null value', async () => {
-      const f = await experimental_flow({
+      const f = await flow({
         async task1() {
           this.$end(null)
         },
@@ -2259,7 +2259,7 @@ describe('experimental_flow', () => {
     })
 
     it('should handle $end() with 0 value', async () => {
-      const f = await experimental_flow({
+      const f = await flow({
         async task1() {
           this.$end(0)
         },
@@ -2269,7 +2269,7 @@ describe('experimental_flow', () => {
     })
 
     it('should handle $end() with false value', async () => {
-      const f = await experimental_flow({
+      const f = await flow({
         async task1() {
           this.$end(false)
         },
@@ -2283,7 +2283,7 @@ describe('experimental_flow', () => {
     it('should respect external abort signal', async () => {
       const controller = new AbortController()
 
-      const promise = experimental_flow(
+      const promise = flow(
         {
           async task1() {
             // Check signal before sleeping
