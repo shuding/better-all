@@ -1,1 +1,8 @@
-export { all, allSettled, flow } from '../lib/index'
+export {
+  all,
+  allSettled,
+  flow,
+  type ExecutionOperation,
+  type ExecutionTraceEvent,
+  type ExecutionTracer,
+} from '../lib/index'

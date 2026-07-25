@@ -1,10 +1,35 @@
 import { describe, it, expect, vi, expectTypeOf } from 'vitest'
-import { all, allSettled, flow } from './index'
+import {
+  all,
+  allSettled,
+  flow,
+  type ExecutionTraceEvent,
+  type ExecutionTracer,
+} from './index'
 
 /**
  * Utility function to sleep for a specified number of milliseconds
  */
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+type TraceRecord = {
+  phase: 'start' | 'end' | 'error'
+  event: ExecutionTraceEvent
+}
+
+function createRecordingTracer(records: TraceRecord[]): ExecutionTracer {
+  return async (event, run) => {
+    records.push({ phase: 'start', event })
+    try {
+      const result = await run()
+      records.push({ phase: 'end', event })
+      return result
+    } catch (error) {
+      records.push({ phase: 'error', event })
+      throw error
+    }
+  }
+}
 
 describe('all', () => {
   describe('Basic parallel execution', () => {
@@ -1074,6 +1099,139 @@ describe('allSettled', () => {
         nil: { status: 'fulfilled', value: null },
         undef: { status: 'fulfilled', value: undefined },
       })
+    })
+  })
+})
+
+describe('Tracing', () => {
+  it('traces the execution, tasks, and dependency waits', async () => {
+    const records: TraceRecord[] = []
+
+    const result = await all(
+      {
+        async source() {
+          await sleep(5)
+          return 1
+        },
+        async dependent() {
+          return (await this.$.source) + 1
+        },
+      },
+      { trace: createRecordingTracer(records) },
+    )
+
+    expect(result).toEqual({ source: 1, dependent: 2 })
+
+    const startedEvents = records
+      .filter((record) => record.phase === 'start')
+      .map((record) => record.event)
+    expect(startedEvents).toEqual(
+      expect.arrayContaining([
+        {
+          type: 'execution',
+          operation: 'all',
+          tasks: ['source', 'dependent'],
+        },
+        {
+          type: 'task',
+          operation: 'all',
+          task: 'source',
+        },
+        {
+          type: 'task',
+          operation: 'all',
+          task: 'dependent',
+        },
+        {
+          type: 'dependency-wait',
+          operation: 'all',
+          task: 'dependent',
+          dependency: 'source',
+        },
+      ]),
+    )
+    expect(records.filter((record) => record.phase === 'error')).toEqual([])
+    expect(records.filter((record) => record.phase === 'end')).toHaveLength(
+      startedEvents.length,
+    )
+  })
+
+  it('reports rejected tasks and dependency waits in allSettled', async () => {
+    const records: TraceRecord[] = []
+
+    const result = await allSettled(
+      {
+        async failed() {
+          await sleep(5)
+          throw new Error('failed')
+        },
+        async dependent() {
+          return await this.$.failed
+        },
+      },
+      { trace: createRecordingTracer(records) },
+    )
+
+    expect(result.failed.status).toBe('rejected')
+    expect(result.dependent.status).toBe('rejected')
+
+    const errorEvents = records
+      .filter((record) => record.phase === 'error')
+      .map((record) => record.event)
+    expect(errorEvents).toEqual(
+      expect.arrayContaining([
+        {
+          type: 'task',
+          operation: 'allSettled',
+          task: 'failed',
+        },
+        {
+          type: 'dependency-wait',
+          operation: 'allSettled',
+          task: 'dependent',
+          dependency: 'failed',
+        },
+        {
+          type: 'task',
+          operation: 'allSettled',
+          task: 'dependent',
+        },
+      ]),
+    )
+    expect(records).toContainEqual({
+      phase: 'end',
+      event: {
+        type: 'execution',
+        operation: 'allSettled',
+        tasks: ['failed', 'dependent'],
+      },
+    })
+  })
+
+  it('supports flow without reporting early exit as an error', async () => {
+    const records: TraceRecord[] = []
+
+    const result = await flow<string>(
+      {
+        winner() {
+          this.$end('done')
+        },
+        other() {
+          return 'other'
+        },
+      },
+      { trace: createRecordingTracer(records) },
+    )
+
+    expect(result).toBe('done')
+    expect(records.filter((record) => record.phase === 'error')).toEqual([])
+    expect(records).toContainEqual({
+      phase: 'end',
+      event: {
+        type: 'execution',
+        operation: 'flow',
+        tasks: ['winner', 'other'],
+      },
     })
   })
 })
