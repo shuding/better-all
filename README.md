@@ -95,6 +95,7 @@ yarn add better-all
 - **No hanging promises**: Avoids the uncaught dangling promises problem often seen in manual optimization
 - **Auto-abort on failure**: Cancel remaining tasks when one fails via `this.$signal`
 - **Debug mode with waterfall visualization**: See exactly how tasks execute with ASCII waterfall charts
+- **Execution tracing**: Instrument executions, tasks, and dependency waits with any tracing library
 - **Early exit support**: Exit flows early when a result is determined
 - **Lightweight**: Minimal dependencies and small bundle size
 
@@ -108,6 +109,7 @@ Execute tasks with automatic dependency resolution.
 - `options`: Optional configuration object
   - `debug`: Set to `true` to output a waterfall chart showing task execution timeline
   - `signal`: An `AbortSignal` to abort all tasks externally
+  - `trace`: A callback for tracing the execution, each task, and dependency waits
 - Each task function receives:
   - `this.$` - an object with promises for all task results
   - `this.$signal` - an `AbortSignal` that aborts when any sibling task fails
@@ -122,6 +124,7 @@ Execute tasks with automatic dependency resolution, returning settled results fo
 - `options`: Optional configuration object
   - `debug`: Set to `true` to output a waterfall chart showing task execution timeline
   - `signal`: An `AbortSignal` to abort all tasks externally
+  - `trace`: A callback for tracing the execution, each task, and dependency waits
 - Each task function receives:
   - `this.$` - an object with promises for all task results
   - `this.$signal` - an `AbortSignal` (only aborts on external signal, not on sibling failure)
@@ -305,6 +308,97 @@ This makes it easy to:
 - See exactly how long each task actively executes vs waits
 - Understand the dependency chain and blocking relationships
 - Spot opportunities for optimization (e.g., tasks with long wait times)
+
+## Execution Tracing
+
+Pass a `trace` callback to instrument the complete execution graph without
+coupling `better-all` to a specific tracing library:
+
+```typescript
+import { SpanStatusCode, trace as openTelemetry } from '@opentelemetry/api'
+import {
+  all,
+  type ExecutionTraceEvent,
+  type ExecutionTracer,
+} from 'better-all'
+
+function formatTraceName(event: ExecutionTraceEvent) {
+  if (event.type === 'execution') {
+    return `better-all.${event.operation}`
+  }
+  if (event.type === 'task') {
+    return 'better-all.task'
+  }
+  return 'better-all.dependency-wait'
+}
+
+function formatTraceAttributes(
+  event: ExecutionTraceEvent,
+): Record<string, string> {
+  const attributes = {
+    'better_all.operation': event.operation,
+  }
+
+  if (event.type === 'execution') {
+    return attributes
+  }
+
+  if (event.type === 'task') {
+    return {
+      ...attributes,
+      'better_all.task': event.task,
+    }
+  }
+
+  return {
+    ...attributes,
+    'better_all.task': event.task,
+    'better_all.dependency': event.dependency,
+  }
+}
+
+const tracer = openTelemetry.getTracer('app')
+const trace: ExecutionTracer = (event, run) =>
+  tracer.startActiveSpan(
+    formatTraceName(event),
+    { attributes: formatTraceAttributes(event) },
+    async (span) => {
+      try {
+        return await run()
+      } catch (error) {
+        span.recordException(error as Error)
+        span.setStatus({ code: SpanStatusCode.ERROR })
+        throw error
+      } finally {
+        span.end()
+      }
+    },
+  )
+
+const result = await all(
+  {
+    async user() {
+      return fetchUser()
+    },
+    async posts() {
+      return fetchPosts((await this.$.user).id)
+    },
+  },
+  { trace },
+)
+```
+
+The callback receives:
+
+- `execution` for the complete `all`, `allSettled`, or `flow` call
+- `task` for each task's full lifetime
+- `dependency-wait` each time a task accesses `this.$.<dependency>`
+
+The callback must return the result of `run` and preserve rejected promises.
+This allows tracing adapters to create correctly nested spans and record errors
+without changing execution behavior. When using OpenTelemetry, use
+`startActiveSpan` or explicitly activate the span context so nested tasks and
+dependency waits inherit the correct parent.
 
 ## Error Handling
 

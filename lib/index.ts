@@ -46,10 +46,36 @@ type AllSettledResult<T extends Record<string, (...args: any[]) => any>> = {
   [K in keyof T]: SettledResult<TaskResult<T[K]>>
 }
 
+export type ExecutionOperation = 'all' | 'allSettled' | 'flow'
+
+export type ExecutionTraceEvent =
+  | {
+      type: 'execution'
+      operation: ExecutionOperation
+      tasks: readonly string[]
+    }
+  | {
+      type: 'task'
+      operation: ExecutionOperation
+      task: string
+    }
+  | {
+      type: 'dependency-wait'
+      operation: ExecutionOperation
+      task: string
+      dependency: string
+    }
+
+export type ExecutionTracer = <T>(
+  event: ExecutionTraceEvent,
+  run: () => Promise<T>,
+) => Promise<T>
+
 // Options for all() and allSettled()
 type ExecutionOptions = {
   debug?: boolean
   signal?: AbortSignal
+  trace?: ExecutionTracer
 }
 
 // Internal options for executeTasksInternal
@@ -177,6 +203,11 @@ function executeTasksInternal<T extends Record<string, any>>(
   options: InternalExecutionOptions = {},
 ): Promise<any> {
   const taskNames = Object.keys(tasks) as (keyof T)[]
+  const operation: ExecutionOperation = options.flowMode
+    ? 'flow'
+    : handleSettled
+      ? 'allSettled'
+      : 'all'
   const results = new Map<keyof T, any>()
   const errors = new Map<keyof T, any>()
   const resolvers = new Map<
@@ -218,40 +249,43 @@ function executeTasksInternal<T extends Record<string, any>>(
   >()
 
   const waitForDep = (taskName: keyof T, depName: keyof T): Promise<any> => {
-    if (!(depName in tasks)) {
-      return Promise.reject(new Error(`Unknown task "${String(depName)}"`))
-    }
-
-    // In flow mode, if flow has ended, reject with FlowAbortedError
-    if (options.flowMode && flowEnded) {
-      return Promise.reject(new FlowAbortedError())
-    }
-
-    // Track dependency for debug mode
-    if (options.debug) {
-      if (!taskDependencies.has(taskName)) {
-        taskDependencies.set(taskName, new Set())
+    const executeDependencyWait = (): Promise<any> => {
+      if (!(depName in tasks)) {
+        return Promise.reject(new Error(`Unknown task "${String(depName)}"`))
       }
-      taskDependencies.get(taskName)!.add(String(depName))
-    }
 
-    let basePromise: Promise<any>
+      // In flow mode, if flow has ended, reject with FlowAbortedError
+      if (options.flowMode && flowEnded) {
+        return Promise.reject(new FlowAbortedError())
+      }
 
-    if (results.has(depName)) {
-      basePromise = Promise.resolve(results.get(depName))
-    } else if (errors.has(depName)) {
-      basePromise = Promise.reject(errors.get(depName))
-    } else {
-      basePromise = new Promise((resolve, reject) => {
-        if (!resolvers.has(depName)) {
-          resolvers.set(depName, [])
+      // Track dependency for debug mode
+      if (options.debug) {
+        if (!taskDependencies.has(taskName)) {
+          taskDependencies.set(taskName, new Set())
         }
-        resolvers.get(depName)!.push([resolve, reject])
-      })
-    }
+        taskDependencies.get(taskName)!.add(String(depName))
+      }
 
-    // Wrap promise to track wait time in debug mode
-    if (options.debug) {
+      let basePromise: Promise<any>
+
+      if (results.has(depName)) {
+        basePromise = Promise.resolve(results.get(depName))
+      } else if (errors.has(depName)) {
+        basePromise = Promise.reject(errors.get(depName))
+      } else {
+        basePromise = new Promise((resolve, reject) => {
+          if (!resolvers.has(depName)) {
+            resolvers.set(depName, [])
+          }
+          resolvers.get(depName)!.push([resolve, reject])
+        })
+      }
+
+      if (!options.debug) {
+        return basePromise
+      }
+
       const waitStart = performance.now()
       return basePromise.then(
         (value) => {
@@ -277,7 +311,19 @@ function executeTasksInternal<T extends Record<string, any>>(
       )
     }
 
-    return basePromise
+    if (!options.trace) {
+      return executeDependencyWait()
+    }
+
+    return options.trace(
+      {
+        type: 'dependency-wait',
+        operation,
+        task: String(taskName),
+        dependency: String(depName),
+      },
+      executeDependencyWait,
+    )
   }
 
   const handleResult = (name: keyof T, value: any) => {
@@ -307,100 +353,120 @@ function executeTasksInternal<T extends Record<string, any>>(
   }
 
   // Run all tasks in parallel
-  const promises = taskNames.map(async (name) => {
-    try {
-      const taskFn = tasks[name]
-      if (typeof taskFn !== 'function') {
-        throw new Error(`Task "${String(name)}" is not a function`)
-      }
+  const promises = taskNames.map((name) => {
+    const executeTask = async () => {
+      try {
+        const taskFn = tasks[name]
+        if (typeof taskFn !== 'function') {
+          throw new Error(`Task "${String(name)}" is not a function`)
+        }
 
-      // Track start time for debug mode
-      if (options.debug) {
-        taskStartTimes.set(name, performance.now())
-      }
+        // Track start time for debug mode
+        if (options.debug) {
+          taskStartTimes.set(name, performance.now())
+        }
 
-      // Create a unique dep proxy for each task to track dependencies
-      const depProxy = new Proxy({} as DepProxy<T>, {
-        get(_, depName: string) {
-          return waitForDep(name, depName as keyof T)
-        },
-      })
+        // Create a unique dep proxy for each task to track dependencies
+        const depProxy = new Proxy({} as DepProxy<T>, {
+          get(_, depName: string) {
+            return waitForDep(name, depName as keyof T)
+          },
+        })
 
-      // Create $end function for flow mode
-      const $end = options.flowMode
-        ? (value: any): never => {
-            if (!flowEnded) {
-              flowEnded = true
-              flowEndValue = value
+        // Create $end function for flow mode
+        const $end = options.flowMode
+          ? (value: any): never => {
+              if (!flowEnded) {
+                flowEnded = true
+                flowEndValue = value
+              }
+              throw new FlowEndError(value)
             }
-            throw new FlowEndError(value)
+          : undefined
+
+        const context: any = {
+          $: depProxy,
+          $signal: internalController.signal,
+        }
+
+        if (options.flowMode && $end) {
+          context.$end = $end
+        }
+
+        const result = await taskFn.call(context)
+
+        // Track end time and create timing record
+        if (options.debug) {
+          const endTime = performance.now()
+          const startTime = taskStartTimes.get(name)!
+          timings.push({
+            name: String(name),
+            startTime,
+            endTime,
+            duration: endTime - startTime,
+            dependencies: Array.from(taskDependencies.get(name) || []),
+            status: 'fulfilled',
+            waitPeriods: taskWaitPeriods.get(name) || [],
+          })
+        }
+
+        handleResult(name, result)
+      } catch (err) {
+        // In flow mode, handle FlowEndError and FlowAbortedError specially
+        if (options.flowMode) {
+          if (err instanceof FlowEndError) {
+            // This is intentional early exit, don't propagate as error.
+            // Reject pending resolvers so dependent tasks don't hang forever.
+            handleError(name, new FlowAbortedError())
+            return
           }
-        : undefined
-
-      const context: any = {
-        $: depProxy,
-        $signal: internalController.signal,
-      }
-
-      if (options.flowMode && $end) {
-        context.$end = $end
-      }
-
-      const result = await taskFn.call(context)
-
-      // Track end time and create timing record
-      if (options.debug) {
-        const endTime = performance.now()
-        const startTime = taskStartTimes.get(name)!
-        timings.push({
-          name: String(name),
-          startTime,
-          endTime,
-          duration: endTime - startTime,
-          dependencies: Array.from(taskDependencies.get(name) || []),
-          status: 'fulfilled',
-          waitPeriods: taskWaitPeriods.get(name) || [],
-        })
-      }
-
-      handleResult(name, result)
-    } catch (err) {
-      // In flow mode, handle FlowEndError and FlowAbortedError specially
-      if (options.flowMode) {
-        if (err instanceof FlowEndError) {
-          // This is intentional early exit, don't propagate as error.
-          // Reject pending resolvers so dependent tasks don't hang forever.
-          handleError(name, new FlowAbortedError())
-          return
+          if (err instanceof FlowAbortedError) {
+            // Flow was ended by another task, silently ignore
+            return
+          }
         }
-        if (err instanceof FlowAbortedError) {
-          // Flow was ended by another task, silently ignore
-          return
+
+        // Track end time for failed tasks too
+        if (options.debug) {
+          const endTime = performance.now()
+          const startTime = taskStartTimes.get(name)!
+          timings.push({
+            name: String(name),
+            startTime,
+            endTime,
+            duration: endTime - startTime,
+            dependencies: Array.from(taskDependencies.get(name) || []),
+            status: 'rejected',
+            waitPeriods: taskWaitPeriods.get(name) || [],
+          })
         }
-      }
 
-      // Track end time for failed tasks too
-      if (options.debug) {
-        const endTime = performance.now()
-        const startTime = taskStartTimes.get(name)!
-        timings.push({
-          name: String(name),
-          startTime,
-          endTime,
-          duration: endTime - startTime,
-          dependencies: Array.from(taskDependencies.get(name) || []),
-          status: 'rejected',
-          waitPeriods: taskWaitPeriods.get(name) || [],
-        })
-      }
-
-      handleError(name, err)
-      if (!handleSettled) {
-        // Abort other tasks when one fails (only for all(), not allSettled())
-        internalController.abort(err)
-        throw err
+        handleError(name, err)
+        if (!handleSettled) {
+          // Abort other tasks when one fails (only for all(), not allSettled())
+          internalController.abort(err)
+          throw err
+        }
+        if (options.trace) {
+          // Let the tracing wrapper observe the rejection. allSettled still
+          // converts the task promise into its settled return value below.
+          throw err
+        }
       }
     }
+
+    if (!options.trace) {
+      return executeTask()
+    }
+
+    return options.trace(
+      {
+        type: 'task',
+        operation,
+        task: String(name),
+      },
+      executeTask,
+    )
   })
 
   const finalPromise = options.flowMode
@@ -506,7 +572,21 @@ export function all<T extends Record<string, any>>(
     },
   options?: ExecutionOptions,
 ): Promise<AllResult<T>> {
-  return executeTasksInternal(tasks, false, options) as Promise<AllResult<T>>
+  const execute = () =>
+    executeTasksInternal(tasks, false, options) as Promise<AllResult<T>>
+
+  if (!options?.trace) {
+    return execute()
+  }
+
+  return options.trace(
+    {
+      type: 'execution',
+      operation: 'all',
+      tasks: Object.keys(tasks),
+    },
+    execute,
+  )
 }
 
 /**
@@ -544,9 +624,21 @@ export function allSettled<T extends Record<string, any>>(
     },
   options?: ExecutionOptions,
 ): Promise<AllSettledResult<T>> {
-  return executeTasksInternal(tasks, true, options) as Promise<
-    AllSettledResult<T>
-  >
+  const execute = () =>
+    executeTasksInternal(tasks, true, options) as Promise<AllSettledResult<T>>
+
+  if (!options?.trace) {
+    return execute()
+  }
+
+  return options.trace(
+    {
+      type: 'execution',
+      operation: 'allSettled',
+      tasks: Object.keys(tasks),
+    },
+    execute,
+  )
 }
 
 /**
@@ -644,8 +736,22 @@ export function flow<R, T extends Record<string, any> = Record<string, any>>(
     },
   options?: ExecutionOptions,
 ): Promise<R | undefined> {
-  return executeTasksInternal(tasks, false, {
-    ...options,
-    flowMode: true,
-  }) as Promise<R | undefined>
+  const execute = () =>
+    executeTasksInternal(tasks, false, {
+      ...options,
+      flowMode: true,
+    }) as Promise<R | undefined>
+
+  if (!options?.trace) {
+    return execute()
+  }
+
+  return options.trace(
+    {
+      type: 'execution',
+      operation: 'flow',
+      tasks: Object.keys(tasks),
+    },
+    execute,
+  )
 }
