@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { describe, it, expect, vi, expectTypeOf } from 'vitest'
 import {
   all,
@@ -17,6 +18,11 @@ type TraceRecord = {
   event: ExecutionTraceEvent
 }
 
+type TraceRelation = {
+  event: ExecutionTraceEvent
+  parent: ExecutionTraceEvent | undefined
+}
+
 function createRecordingTracer(records: TraceRecord[]): ExecutionTracer {
   return async (event, run) => {
     records.push({ phase: 'start', event })
@@ -28,6 +34,15 @@ function createRecordingTracer(records: TraceRecord[]): ExecutionTracer {
       records.push({ phase: 'error', event })
       throw error
     }
+  }
+}
+
+function createContextTracer(relations: TraceRelation[]): ExecutionTracer {
+  const context = new AsyncLocalStorage<ExecutionTraceEvent>()
+
+  return (event, run) => {
+    relations.push({ event, parent: context.getStore() })
+    return context.run(event, run)
   }
 }
 
@@ -1104,6 +1119,63 @@ describe('allSettled', () => {
 })
 
 describe('Tracing', () => {
+  it('preserves parent context for tasks and dependency waits', async () => {
+    const relations: TraceRelation[] = []
+
+    await all(
+      {
+        async source() {
+          await sleep(5)
+          return 1
+        },
+        async dependent() {
+          return (await this.$.source) + 1
+        },
+      },
+      { trace: createContextTracer(relations) },
+    )
+
+    const execution = {
+      type: 'execution',
+      operation: 'all',
+      tasks: ['source', 'dependent'],
+    } satisfies ExecutionTraceEvent
+
+    expect(relations).toContainEqual({
+      event: execution,
+      parent: undefined,
+    })
+    expect(relations).toContainEqual({
+      event: {
+        type: 'task',
+        operation: 'all',
+        task: 'source',
+      },
+      parent: execution,
+    })
+    expect(relations).toContainEqual({
+      event: {
+        type: 'task',
+        operation: 'all',
+        task: 'dependent',
+      },
+      parent: execution,
+    })
+    expect(relations).toContainEqual({
+      event: {
+        type: 'dependency-wait',
+        operation: 'all',
+        task: 'dependent',
+        dependency: 'source',
+      },
+      parent: {
+        type: 'task',
+        operation: 'all',
+        task: 'dependent',
+      },
+    })
+  })
+
   it('traces the execution, tasks, and dependency waits', async () => {
     const records: TraceRecord[] = []
 
@@ -1154,6 +1226,161 @@ describe('Tracing', () => {
     expect(records.filter((record) => record.phase === 'end')).toHaveLength(
       startedEvents.length,
     )
+  })
+
+  it('reports task and execution failures from all', async () => {
+    const records: TraceRecord[] = []
+    const failure = new Error('failed')
+
+    await expect(
+      all(
+        {
+          failed() {
+            throw failure
+          },
+        },
+        { trace: createRecordingTracer(records) },
+      ),
+    ).rejects.toBe(failure)
+
+    expect(
+      records
+        .filter((record) => record.phase === 'error')
+        .map((record) => record.event),
+    ).toEqual([
+      {
+        type: 'task',
+        operation: 'all',
+        task: 'failed',
+      },
+      {
+        type: 'execution',
+        operation: 'all',
+        tasks: ['failed'],
+      },
+    ])
+  })
+
+  it('reports unknown dependency access at every tracing level', async () => {
+    const records: TraceRecord[] = []
+
+    await expect(
+      all(
+        {
+          async task() {
+            const dependencies = this.$ as unknown as Record<
+              string,
+              Promise<unknown>
+            >
+            return await dependencies.missing
+          },
+        },
+        { trace: createRecordingTracer(records) },
+      ),
+    ).rejects.toThrow('Unknown task "missing"')
+
+    expect(
+      records
+        .filter((record) => record.phase === 'error')
+        .map((record) => record.event),
+    ).toEqual([
+      {
+        type: 'dependency-wait',
+        operation: 'all',
+        task: 'task',
+        dependency: 'missing',
+      },
+      {
+        type: 'task',
+        operation: 'all',
+        task: 'task',
+      },
+      {
+        type: 'execution',
+        operation: 'all',
+        tasks: ['task'],
+      },
+    ])
+  })
+
+  it('traces each access to the same dependency', async () => {
+    const records: TraceRecord[] = []
+
+    const result = await all(
+      {
+        async source() {
+          await sleep(5)
+          return 2
+        },
+        async dependent() {
+          const [first, second] = await Promise.all([
+            this.$.source,
+            this.$.source,
+          ])
+          return first + second
+        },
+      },
+      { trace: createRecordingTracer(records) },
+    )
+
+    expect(result.dependent).toBe(4)
+
+    const dependencyRecords = records.filter(
+      (record) =>
+        record.event.type === 'dependency-wait' &&
+        record.event.task === 'dependent' &&
+        record.event.dependency === 'source',
+    )
+    expect(
+      dependencyRecords.filter((record) => record.phase === 'start'),
+    ).toHaveLength(2)
+    expect(
+      dependencyRecords.filter((record) => record.phase === 'end'),
+    ).toHaveLength(2)
+  })
+
+  it('reports errors caused by an external abort', async () => {
+    const records: TraceRecord[] = []
+    const controller = new AbortController()
+    const abortError = new Error('aborted')
+
+    const result = all(
+      {
+        async pending() {
+          return await new Promise<never>((_resolve, reject) => {
+            this.$signal.addEventListener(
+              'abort',
+              () => reject(this.$signal.reason),
+              { once: true },
+            )
+          })
+        },
+      },
+      {
+        signal: controller.signal,
+        trace: createRecordingTracer(records),
+      },
+    )
+
+    controller.abort(abortError)
+
+    await expect(result).rejects.toBe(abortError)
+    expect(
+      records
+        .filter((record) => record.phase === 'error')
+        .map((record) => record.event),
+    ).toEqual([
+      {
+        type: 'task',
+        operation: 'all',
+        task: 'pending',
+      },
+      {
+        type: 'execution',
+        operation: 'all',
+        tasks: ['pending'],
+      },
+    ])
   })
 
   it('reports rejected tasks and dependency waits in allSettled', async () => {
