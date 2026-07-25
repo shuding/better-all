@@ -315,6 +315,7 @@ Pass a `trace` callback to instrument the complete execution graph without
 coupling `better-all` to a specific tracing library:
 
 ```typescript
+import { SpanStatusCode, trace as openTelemetry } from '@opentelemetry/api'
 import {
   all,
   type ExecutionTraceEvent,
@@ -326,22 +327,53 @@ function formatTraceName(event: ExecutionTraceEvent) {
     return `better-all.${event.operation}`
   }
   if (event.type === 'task') {
-    return `better-all.${event.operation}.task.${event.task}`
+    return 'better-all.task'
   }
-  return `better-all.${event.operation}.wait.${event.task}.${event.dependency}`
+  return 'better-all.dependency-wait'
 }
 
-const trace: ExecutionTracer = async (event, run) => {
-  const span = tracer.startSpan(formatTraceName(event))
-  try {
-    return await run()
-  } catch (error) {
-    span.recordException(error)
-    throw error
-  } finally {
-    span.end()
+function formatTraceAttributes(
+  event: ExecutionTraceEvent,
+): Record<string, string> {
+  const attributes = {
+    'better_all.operation': event.operation,
+  }
+
+  if (event.type === 'execution') {
+    return attributes
+  }
+
+  if (event.type === 'task') {
+    return {
+      ...attributes,
+      'better_all.task': event.task,
+    }
+  }
+
+  return {
+    ...attributes,
+    'better_all.task': event.task,
+    'better_all.dependency': event.dependency,
   }
 }
+
+const tracer = openTelemetry.getTracer('app')
+const trace: ExecutionTracer = (event, run) =>
+  tracer.startActiveSpan(
+    formatTraceName(event),
+    { attributes: formatTraceAttributes(event) },
+    async (span) => {
+      try {
+        return await run()
+      } catch (error) {
+        span.recordException(error as Error)
+        span.setStatus({ code: SpanStatusCode.ERROR })
+        throw error
+      } finally {
+        span.end()
+      }
+    },
+  )
 
 const result = await all(
   {
@@ -364,7 +396,9 @@ The callback receives:
 
 The callback must return the result of `run` and preserve rejected promises.
 This allows tracing adapters to create correctly nested spans and record errors
-without changing execution behavior.
+without changing execution behavior. When using OpenTelemetry, use
+`startActiveSpan` or explicitly activate the span context so nested tasks and
+dependency waits inherit the correct parent.
 
 ## Error Handling
 
