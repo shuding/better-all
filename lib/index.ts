@@ -374,7 +374,9 @@ function executeTasksInternal<T extends Record<string, any>>(
           return
         }
         if (err instanceof FlowAbortedError) {
-          // Flow was ended by another task, silently ignore
+          // Flow was ended by another task. Pass the abort on to this task's
+          // own waiters, or tasks further down the chain never settle.
+          handleError(name, err)
           return
         }
       }

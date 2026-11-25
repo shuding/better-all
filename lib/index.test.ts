@@ -2112,6 +2112,46 @@ describe('flow', () => {
       // task2 finishes first, so its $end wins
       expect(f).toBe('second')
     })
+
+    it('should settle when $end() fires while a task two levels down is waiting', async () => {
+      const f = await flow<string>({
+        async gate() {
+          await sleep(10)
+          this.$end('early')
+        },
+        async a() {
+          return (await this.$.gate) + '-a'
+        },
+        async b() {
+          return (await this.$.a) + '-b'
+        },
+      })
+
+      expect(f).toBe('early')
+    }, 1000)
+
+    it('should settle when $end() fires above a diamond of waiting tasks', async () => {
+      const f = await flow<string>({
+        async gate() {
+          await sleep(10)
+          this.$end('early')
+        },
+        async left() {
+          return await this.$.gate
+        },
+        async right() {
+          return await this.$.gate
+        },
+        async join() {
+          return (await this.$.left) + (await this.$.right)
+        },
+        async below() {
+          return (await this.$.join) + '-below'
+        },
+      })
+
+      expect(f).toBe('early')
+    }, 1000)
   })
 
   describe('Error handling', () => {
